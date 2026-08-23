@@ -78,6 +78,10 @@ def hotkey_path() -> Path:
     return roaming_dir() / "hotkey"
 
 
+def seek_hold_path() -> Path:
+    return roaming_dir() / "seek_hold"
+
+
 def default_mpv_root() -> Path:
     candidates = [
         Path(r"C:\mpv"),

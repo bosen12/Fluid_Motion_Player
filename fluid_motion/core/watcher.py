@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings, save_settings
-from fluid_motion.paths import heartbeat_path, hotkey_path
+from fluid_motion.paths import heartbeat_path, hotkey_path, seek_hold_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
 from fluid_motion.core.gpu import snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
     apply,
+    interpolation_held_off,
     live_fps_label,
     live_source_fps,
     measured_output_fps,
@@ -83,6 +84,15 @@ class Engine:
             heartbeat_path().write_text(str(time.time()), encoding="utf-8")
         except OSError:
             pass
+
+    def _seek_hold_age(self) -> float | None:
+        try:
+            return time.time() - seek_hold_path().stat().st_mtime
+        except OSError:
+            return None
+
+    def _held_off(self, seeking: bool = False) -> bool:
+        return interpolation_held_off(seeking, self._seek_hold_age())
 
     def _consume_hotkey(self) -> None:
         path = hotkey_path()
@@ -183,7 +193,16 @@ class Engine:
                 player.output_fps = ""
                 player.estimated_vfps = ""
             live[player.pid] = ipc
-            if self.settings.enabled and self._runtime.ready:
+            held = self._held_off(bool(info.get("seeking")))
+            if held:
+                if player.interpolation:
+                    try:
+                        remove(ipc)
+                        player.interpolation = False
+                        self._error = ""
+                    except IpcError as exc:
+                        self._error = str(exc)
+            elif self.settings.enabled and self._runtime.ready:
                 if not player.interpolation:
                     try:
                         apply(ipc, self.settings, Path(self.settings.mpv_root))
@@ -218,10 +237,13 @@ class Engine:
                     if not self._runtime.ready:
                         self._error = "TensorRT 執行環境尚未就緒"
                         return
-                    apply(ipc, self.settings, Path(self.settings.mpv_root))
+                    if self._held_off():
+                        self._error = ""
+                        continue
+                    apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)
                     self._error = ""
                 else:
-                    remove(ipc)
+                    remove(ipc, announce=True)
                     self._error = ""
             except IpcError as exc:
                 self._error = str(exc)

@@ -65,6 +65,20 @@ def interpolation_active(ipc: MpvIpc) -> bool:
 
 
 SHORTFALL_RATIO = 0.12
+SEEK_HOLD_MAX_AGE = 2.0
+
+
+def interpolation_held_off(
+    seeking: bool,
+    hold_age: float | None,
+    max_age: float = SEEK_HOLD_MAX_AGE,
+) -> bool:
+    """True while mpv is seeking or lua still has the post-seek quiet file."""
+    if seeking:
+        return True
+    if hold_age is None:
+        return False
+    return 0 <= hold_age < max_age
 
 
 def as_fps(value: Any) -> float | None:
@@ -146,6 +160,7 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     est_display = _get("estimated-display-fps")
     vsync = _get("vsync-ratio")
     paused = bool(_get("pause") or False)
+    seeking = bool(_get("seeking") or False)
     interpolating = interpolation_active(ipc)
     source = live_source_fps(container, estimated, interpolating)
     return {
@@ -159,12 +174,13 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
         "estimated_display_fps": as_fps(est_display),
         "vsync_ratio": as_fps(vsync),
         "paused": paused,
+        "seeking": seeking,
         "interpolation": interpolating,
         "vf": current_filters(ipc),
     }
 
 
-def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path) -> Path:
+def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = False) -> Path:
     info = snapshot_playback(ipc)
     source = parse_fps(info.get("container_fps") or info.get("fps"))
     display = info.get("display_fps")
@@ -207,14 +223,15 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path) -> Path:
         ipc.set("window-minimized", False)
     except IpcError:
         pass
-    try:
-        ipc.command("show-text", f"Fluid Motion  {rife_label(settings.rife_model)} TensorRT")
-    except IpcError:
-        pass
+    if announce:
+        try:
+            ipc.command("show-text", f"Fluid Motion  {rife_label(settings.rife_model)} TensorRT")
+        except IpcError:
+            pass
     return script
 
 
-def remove(ipc: MpvIpc) -> None:
+def remove(ipc: MpvIpc, *, announce: bool = False) -> None:
     try:
         ipc.command("vf", "remove", FILTER_LABEL)
     except IpcError:
@@ -235,10 +252,11 @@ def remove(ipc: MpvIpc) -> None:
             ipc.command("vf", "remove", f"@{label}" if label else "vapoursynth")
         except IpcError:
             continue
-    try:
-        ipc.command("show-text", "Fluid Motion  off", 1200)
-    except IpcError:
-        pass
+    if announce:
+        try:
+            ipc.command("show-text", "Fluid Motion  off", 1200)
+        except IpcError:
+            pass
 
 
 def fps_fraction_label(value: Any) -> str:

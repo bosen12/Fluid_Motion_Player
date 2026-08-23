@@ -72,6 +72,18 @@ def test_apply_does_not_switch_gpu_api():
     assert 'ipc.set("gpu-api"' not in src
 
 
+def test_auto_apply_is_silent_user_toggle_announces():
+    from fluid_motion.core import inject as inject_mod
+    from fluid_motion.core import watcher as watcher_mod
+
+    inject_src = Path(inject_mod.__file__).read_text(encoding="utf-8")
+    watcher_src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
+    assert "announce: bool = False" in inject_src
+    assert "apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)" in watcher_src
+    assert "remove(ipc, announce=True)" in watcher_src
+    assert watcher_src.count("announce=True") == 2
+
+
 def test_vf_arg_uses_label():
     arg = _vf_arg(Path("C:/mpv/shaders/fluid_rife.vpy"))
     assert arg.startswith(FILTER_LABEL)
@@ -158,6 +170,29 @@ def test_lua_f3_does_not_inject_vf():
     assert "vf add" not in lua
     assert "hotkey" in lua
     assert "alive" in lua
+
+
+def test_interpolation_held_off_during_seek_and_hold_file():
+    from fluid_motion.core.inject import interpolation_held_off
+
+    assert interpolation_held_off(seeking=True, hold_age=None) is True
+    assert interpolation_held_off(seeking=False, hold_age=0.1) is True
+    assert interpolation_held_off(seeking=False, hold_age=0.0) is True
+    assert interpolation_held_off(seeking=False, hold_age=3.0) is False
+    assert interpolation_held_off(seeking=False, hold_age=None) is False
+    assert interpolation_held_off(seeking=False, hold_age=-0.1) is False
+
+
+def test_lua_strips_vf_on_seek_without_readding():
+    from fluid_motion.paths import resources_dir
+
+    lua = (resources_dir() / "zz-fluid-ipc.lua").read_text(encoding="utf-8")
+    assert "seek_hold" in lua
+    assert 'register_event("seek"' in lua
+    assert 'register_event("playback-restart"' in lua
+    assert 'observe_property("seeking"' in lua
+    assert "vf add" not in lua
+    assert 'vf", "remove", "@fluid"' in lua
 
 
 def test_titlebar_has_pywebview_drag_region():
