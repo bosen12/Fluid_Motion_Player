@@ -23,6 +23,10 @@ class Bridge:
         self.engine.update_settings(profile=str(profile))
         return self.get_state()
 
+    def set_model(self, model: int) -> dict[str, Any]:
+        self.engine.update_settings(rife_model=int(model))
+        return self.get_state()
+
     def set_scene(self, value: float) -> dict[str, Any]:
         self.engine.update_settings(scene_threshold=float(value))
         return self.get_state()

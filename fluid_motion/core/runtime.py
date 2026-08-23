@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fluid_motion.core.vs_script import rife_label, rife_onnx_name
 from fluid_motion.paths import default_mpv_root, engine_cache_dir
 
 
@@ -88,19 +89,27 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
     trt_detail = "TensorRT 插件就緒" if trt_ok else "需要 vstrt.dll 與 TensorRT/CUDA runtime"
     checks.append(Check("tensorrt", "TensorRT + CUDA", trt_ok, trt_detail))
 
-    onnx = None
-    for rel in (
-        Path("vs-plugins") / "models" / "rife" / "rife_v4.6.onnx",
-        Path("vs-plugins") / "models" / "rife_v2" / "rife_v4.6.onnx",
-        Path("models") / "rife" / "rife_v4.6.onnx",
-        Path("models") / "rife_v2" / "rife_v4.6.onnx",
-    ):
-        candidate = root / rel
-        if candidate.is_file():
-            onnx = candidate
-            break
+    def _find_onnx(model: int) -> Path | None:
+        name = rife_onnx_name(model)
+        for folder in ("rife_v2", "rife"):
+            for base in (root / "vs-plugins" / "models", root / "models"):
+                candidate = base / folder / name
+                if candidate.is_file():
+                    return candidate
+        return None
+
+    onnx46 = _find_onnx(46)
+    onnx425 = _find_onnx(425)
+    onnx426 = _find_onnx(426)
+    onnx = onnx426 or onnx425 or onnx46
     checks.append(
-        Check("rife46", "RIFE 4.6 ONNX", onnx is not None, str(onnx) if onnx else "尚未下載 rife_v4.6.onnx")
+        Check("rife46", rife_label(46), onnx46 is not None, str(onnx46) if onnx46 else "尚未下載 rife_v4.6.onnx")
+    )
+    checks.append(
+        Check("rife425", rife_label(425), onnx425 is not None, str(onnx425) if onnx425 else "尚未下載 rife_v4.25.onnx")
+    )
+    checks.append(
+        Check("rife426", rife_label(426), onnx426 is not None, str(onnx426) if onnx426 else "尚未下載 rife_v4.26.onnx")
     )
 
     python_ok = (root / "python.exe").is_file() and (root / "python312.dll").is_file()
@@ -108,7 +117,8 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
         Check("python", "mpv 內嵌 Python 3.12", python_ok, str(root / "python.exe") if python_ok else "缺少內嵌 Python")
     )
 
-    ready = all(c.ok for c in checks)
+    core_ok = all(c.ok for c in checks if c.id not in {"rife46", "rife425", "rife426"})
+    ready = core_ok and (onnx46 is not None or onnx425 is not None or onnx426 is not None)
     return RuntimeStatus(
         mpv_root=str(root),
         ready=ready,

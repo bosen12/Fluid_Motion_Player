@@ -21,7 +21,7 @@
           <span class="grip" aria-hidden="true"></span>
           <div class="brand">
             <span class="wordmark" translate="no">Fluid Motion</span>
-            <span class="brand-sub">RIFE 4.6 · TensorRT</span>
+            <span class="brand-sub">RIFE · TensorRT</span>
           </div>
           <div class="meta">
             <span class="live" id="live" data-on="false"><span class="live-dot" aria-hidden="true"></span><span id="live-text">等待 mpv</span></span>
@@ -31,7 +31,7 @@
         <div class="window-btns">
           <button type="button" class="win" id="btn-min" aria-label="縮小到系統匣">–</button>
           <button type="button" class="win" id="btn-hide" aria-label="隱藏視窗">□</button>
-          <button type="button" class="win" id="btn-quit" aria-label="隱藏到系統匣">×</button>
+          <button type="button" class="win" id="btn-quit" aria-label="結束程式">×</button>
         </div>
       </header>
 
@@ -56,7 +56,7 @@
                 <dd id="dst-fps" aria-live="polite">—</dd>
               </dl>
             </div>
-            <p class="engine-line" id="engine-line">RIFE 4.6 · TensorRT · CUDA</p>
+            <p class="engine-line" id="engine-line">RIFE 4.25 · TensorRT · CUDA</p>
           </section>
 
           <section class="controls">
@@ -64,7 +64,8 @@
               <span class="toggle-kicker">即時補幀</span>
               <span class="toggle-label">未啟用</span>
             </button>
-            <div>
+            <div class="chip-stack">
+              <div class="profiles" id="models" role="group" aria-label="RIFE 模型"></div>
               <div class="profiles" id="profiles" role="group" aria-label="目標幀率"></div>
             </div>
           </section>

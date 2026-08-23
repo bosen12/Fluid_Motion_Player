@@ -13,6 +13,13 @@ class IpcError(RuntimeError):
     pass
 
 
+def as_win_pipe(path: str) -> str:
+    """mpv on Windows prefixes the ipc-server string with \\\\.\\pipe\\ as-is."""
+    if path.startswith("\\\\.\\pipe\\"):
+        return path
+    return "\\\\.\\pipe\\" + path
+
+
 class MpvIpc:
     def __init__(self, handle: Any, kind: str, path: str):
         self._handle = handle
@@ -100,22 +107,16 @@ class MpvIpc:
             return b""
 
 
-def _open_named_pipe(path: str) -> MpvIpc | None:
-    if os.name != "nt":
-        return None
+def _try_create_pipe(path: str) -> MpvIpc | None:
     try:
         import pywintypes
         import win32file
         import win32pipe
     except ImportError:
         return None
-    pipe = path
-    if not pipe.startswith("\\\\.\\pipe\\") and not os.path.exists(pipe):
-        # mpvSockets stores a filesystem-looking name; try as pipe too
-        pipe = r"\\.\pipe\\" + path.replace("\\", "/").replace(":", "")
     try:
         handle = win32file.CreateFile(
-            path if path.startswith("\\\\.\\pipe\\") or os.path.exists(path) else pipe,
+            path,
             win32file.GENERIC_READ | win32file.GENERIC_WRITE,
             0,
             None,
@@ -127,6 +128,20 @@ def _open_named_pipe(path: str) -> MpvIpc | None:
         return MpvIpc(handle, "pipe", path)
     except (OSError, pywintypes.error):
         return None
+
+
+def _open_named_pipe(path: str) -> MpvIpc | None:
+    if os.name != "nt":
+        return None
+    seen: set[str] = set()
+    for candidate in (path, as_win_pipe(path)):
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        ipc = _try_create_pipe(candidate)
+        if ipc is not None:
+            return ipc
+    return None
 
 
 def _open_socket(path: str) -> MpvIpc | None:
@@ -164,16 +179,11 @@ def connect_pid(pid: int, extra: list[str] | tuple[str, ...] | None = None) -> M
 def enumerate_windows_pipes(prefix: str = "fluid-mpv-") -> list[str]:
     if os.name != "nt":
         return []
-    try:
-        import win32file
-    except ImportError:
-        return []
     found: list[str] = []
     try:
-        for entry in win32file.FindFiles(r"\\.\pipe\*"):
-            name = entry[8] if len(entry) > 8 else ""
-            if isinstance(name, str) and prefix in name.lower():
-                found.append(rf"\\.\pipe\{name}")
+        for name in os.listdir(r"\\.\pipe\\"):
+            if prefix.lower() in name.lower():
+                found.append(as_win_pipe(name))
     except OSError:
         return []
     return found

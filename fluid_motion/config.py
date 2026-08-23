@@ -9,6 +9,7 @@ from fluid_motion.paths import config_path, default_mpv_root
 
 
 PROFILES = ("2x", "3x", "60", "120", "144", "display")
+RIFE_MODELS = (426, 425, 46)
 
 
 @dataclass
@@ -16,13 +17,13 @@ class Settings:
     enabled: bool = False
     profile: str = "2x"
     scene_threshold: float = 0.10
-    trt_streams: int = 2
+    trt_streams: int = 1
     fp16: bool = True
-    cuda_graph: bool = True
+    cuda_graph: bool = False
     start_hidden: bool = False
     autostart: bool = False
     mpv_root: str = field(default_factory=lambda: str(default_mpv_root()))
-    rife_model: int = 46  # vsmlrt RIFEModel.v4_6
+    rife_model: int = 426  # vsmlrt RIFEModel.v4_26 — 4.6 paints a waffle grid
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -33,6 +34,12 @@ class Settings:
         settings = cls(**known)
         if settings.profile not in PROFILES:
             settings.profile = "2x"
+        try:
+            settings.rife_model = int(settings.rife_model)
+        except (TypeError, ValueError):
+            settings.rife_model = 426
+        if settings.rife_model not in RIFE_MODELS:
+            settings.rife_model = 426
         settings.scene_threshold = min(0.30, max(0.02, float(settings.scene_threshold)))
         settings.trt_streams = min(4, max(1, int(settings.trt_streams)))
         return settings

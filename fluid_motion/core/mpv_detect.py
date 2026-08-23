@@ -29,6 +29,9 @@ class PlayerProcess:
     height: int = 0
     fps: str = ""
     estimated_vfps: str = ""
+    output_fps: str = ""
+    target_fps: str = ""
+    fps_ok: bool = True
     interpolation: bool = False
     paused: bool = False
 
@@ -65,14 +68,26 @@ def mpv_root_from(exe: Path | None = None, configured: str | None = None) -> Pat
     return default_mpv_root()
 
 
+def _is_helper_mpv(proc: Any) -> bool:
+    """thumbfast / screenshot helpers spawn a second mpv without scripts."""
+    try:
+        cmd = proc.info.get("cmdline") or proc.cmdline() or []
+    except (psutil.Error, OSError, TypeError):
+        return False
+    text = " ".join(str(part) for part in cmd).lower()
+    return "thumbfast" in text or "--load-scripts=no" in text
+
+
 def iter_mpv_processes() -> list[PlayerProcess]:
     found: list[PlayerProcess] = []
     if psutil is None:
         return found
-    for proc in psutil.process_iter(["pid", "name", "exe"]):
+    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
             if name not in PLAYER_NAMES:
+                continue
+            if _is_helper_mpv(proc):
                 continue
             exe = proc.info.get("exe") or ""
             found.append(PlayerProcess(pid=int(proc.info["pid"]), name=name, exe=exe))
@@ -90,16 +105,34 @@ def windows_temp_dir() -> Path:
     return Path.home() / "AppData" / "Local" / "Temp"
 
 
+def list_win_pipes() -> list[str]:
+    if os.name != "nt":
+        return []
+    try:
+        return os.listdir(r"\\.\pipe\\")
+    except OSError:
+        return []
+
+
 def candidate_pipes(pid: int, extra: Iterable[str] = ()) -> list[str]:
+    socket_path = str(windows_temp_dir() / "mpvSockets" / str(pid))
     names = [
         rf"\\.\pipe\fluid-mpv-{pid}",
         rf"\\.\pipe\mpvpipe",
         rf"\\.\pipe\mpv-{pid}",
         rf"\\.\pipe\mpvsocket",
-        str(windows_temp_dir() / "mpvSockets" / str(pid)),
+        rf"\\.\pipe\{socket_path}",
+        socket_path,
     ]
     names.extend(extra)
-    # preserve order, drop dups
+    needle = str(pid)
+    for raw in list_win_pipes():
+        low = raw.lower()
+        if needle not in raw and f"fluid-mpv-{pid}" not in low:
+            continue
+        if "thumbfast" in low:
+            continue
+        names.append(raw if raw.startswith("\\\\.\\pipe\\") else rf"\\.\pipe\{raw}")
     seen: set[str] = set()
     ordered: list[str] = []
     for name in names:

@@ -7,9 +7,18 @@ from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings, save_settings
+from fluid_motion.paths import heartbeat_path, hotkey_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
 from fluid_motion.core.gpu import snapshot as gpu_snapshot
-from fluid_motion.core.inject import apply, fps_fraction_label, interpolation_active, remove, snapshot_playback
+from fluid_motion.core.inject import (
+    apply,
+    live_fps_label,
+    live_source_fps,
+    measured_output_fps,
+    output_shortfall,
+    remove,
+    snapshot_playback,
+)
 from fluid_motion.core.mpv_detect import PlayerProcess, find_mpv_executable, iter_mpv_processes, mpv_root_from
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
 from fluid_motion.core.runtime import diagnose
@@ -31,9 +40,15 @@ class Engine:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._on_change: Callable[[], None] | None = None
+        self._on_show: Callable[[], None] | None = None
 
-    def start(self, on_change: Callable[[], None] | None = None) -> None:
+    def start(
+        self,
+        on_change: Callable[[], None] | None = None,
+        on_show: Callable[[], None] | None = None,
+    ) -> None:
         self._on_change = on_change
+        self._on_show = on_show
         try:
             root = Path(self.settings.mpv_root)
             install_lua(root)
@@ -42,16 +57,58 @@ class Engine:
             self._error = str(exc)
         self._thread = threading.Thread(target=self._loop, name="fluid-watcher", daemon=True)
         self._thread.start()
+        self._write_heartbeat()
+
+    def set_on_show(self, on_show: Callable[[], None] | None) -> None:
+        self._on_show = on_show
 
     def stop(self) -> None:
         self._stop.set()
+        try:
+            heartbeat_path().unlink(missing_ok=True)
+        except OSError:
+            pass
         with self._lock:
-            for ipc in self._ipc.values():
-                ipc.close()
+            ipcs = list(self._ipc.values())
             self._ipc.clear()
+        for ipc in ipcs:
+            try:
+                remove(ipc)
+            except IpcError:
+                pass
+            ipc.close()
+
+    def _write_heartbeat(self) -> None:
+        try:
+            heartbeat_path().write_text(str(time.time()), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _consume_hotkey(self) -> None:
+        path = hotkey_path()
+        if not path.is_file():
+            return
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip().lower()
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+        if text in {"toggle", "on", "off"}:
+            if text == "on":
+                want = True
+            elif text == "off":
+                want = False
+            else:
+                want = not self.settings.enabled
+            self.set_enabled(want)
+        elif text == "show" and self._on_show:
+            try:
+                self._on_show()
+            except Exception:
+                pass
 
     def _loop(self) -> None:
-        while not self._stop.wait(0.9):
+        while not self._stop.wait(0.3):
             try:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 — keep the watcher alive
@@ -63,6 +120,8 @@ class Engine:
                     pass
 
     def tick(self) -> None:
+        self._write_heartbeat()
+        self._consume_hotkey()
         players = iter_mpv_processes()
         live: dict[int, MpvIpc] = {}
         with self._lock:
@@ -83,22 +142,60 @@ class Engine:
             player.media = str(info.get("media") or "")
             player.width = int(info.get("width") or 0)
             player.height = int(info.get("height") or 0)
-            player.fps = fps_fraction_label(info.get("fps"))
             player.paused = bool(info.get("paused"))
             player.interpolation = bool(info.get("interpolation"))
-            src = parse_fps(info.get("fps"))
-            multi, _ = target_multi(self.settings.profile, src, info.get("display_fps"))
+            src = live_source_fps(
+                info.get("container_fps") or info.get("fps"),
+                info.get("estimated_vfps"),
+                player.interpolation,
+            )
+            player.fps = live_fps_label(src)
+            multi, _ = target_multi(self.settings.profile, parse_fps(src), info.get("display_fps"))
+            target = None
             if src:
                 try:
-                    out = src * (multi if not isinstance(multi, int) else multi)
-                    player.estimated_vfps = f"{float(out):.3f}".rstrip("0").rstrip(".")
+                    target = float(src) * float(multi)
+                    player.target_fps = live_fps_label(target)
                 except Exception:
-                    player.estimated_vfps = ""
+                    player.target_fps = ""
+            else:
+                player.target_fps = ""
+            measured = measured_output_fps(
+                info.get("display_fps"),
+                info.get("vsync_ratio"),
+                info.get("estimated_display_fps"),
+            )
+            short = output_shortfall(
+                measured,
+                target,
+                paused=player.paused,
+                interpolating=player.interpolation,
+            )
+            player.fps_ok = not short
+            if measured:
+                label = live_fps_label(measured)
+                player.output_fps = label
+                player.estimated_vfps = label
+            elif target and (player.interpolation or self.settings.enabled):
+                player.output_fps = ""
+                player.estimated_vfps = ""
+            else:
+                player.output_fps = ""
+                player.estimated_vfps = ""
             live[player.pid] = ipc
-            if self.settings.enabled and self._runtime.ready and not player.interpolation:
+            if self.settings.enabled and self._runtime.ready:
+                if not player.interpolation:
+                    try:
+                        apply(ipc, self.settings, Path(self.settings.mpv_root))
+                        player.interpolation = True
+                        self._error = ""
+                    except IpcError as exc:
+                        self._error = str(exc)
+            elif player.interpolation:
                 try:
-                    apply(ipc, self.settings, Path(self.settings.mpv_root))
-                    player.interpolation = True
+                    remove(ipc)
+                    player.interpolation = False
+                    self._error = ""
                 except IpcError as exc:
                     self._error = str(exc)
         for pid, ipc in old.items():
@@ -122,8 +219,10 @@ class Engine:
                         self._error = "TensorRT 執行環境尚未就緒"
                         return
                     apply(ipc, self.settings, Path(self.settings.mpv_root))
+                    self._error = ""
                 else:
                     remove(ipc)
+                    self._error = ""
             except IpcError as exc:
                 self._error = str(exc)
         self.tick()

@@ -134,10 +134,26 @@ def install_runtime(mpv_root: Path, cb: Progress | None = None) -> None:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if found.resolve() != dest.resolve():
                 shutil.copy2(found, dest)
-    if not (models_dir / "rife" / "rife_v4.6.onnx").is_file() and not (models_dir / "rife_v2" / "rife_v4.6.onnx").is_file():
+    if not (models_dir / "rife" / "rife_v4.25.onnx").is_file() and not (models_dir / "rife_v2" / "rife_v4.25.onnx").is_file():
+        m425 = cache / "rife_v4.25.7z"
+        _download(f"{GITHUB_MODELS}/rife_v4.25.7z", m425, cb, "RIFE 4.25", (0.88, 0.93))
+        _extract(m425, models_dir, seven)
+    if not (models_dir / "rife" / "rife_v4.26.onnx").is_file() and not (models_dir / "rife_v2" / "rife_v4.26.onnx").is_file():
+        m426 = cache / "rife_v4.26.7z"
+        _download(f"{GITHUB_MODELS}/rife_v4.26.7z", m426, cb, "RIFE 4.26", (0.93, 0.96))
+        _extract(m426, models_dir, seven)
+
+    if not (models_dir / "rife_v2" / "rife_v4.6.onnx").is_file():
         v2_arc = cache / "rife_v2_v4.7z"
         _download(f"{GITHUB_MODELS}/rife_v2_v4.7z", v2_arc, cb, "RIFE v2 / v4", (0.90, 0.96))
         _extract(v2_arc, models_dir, seven)
+        nested = list(models_dir.rglob("rife_v4.6.onnx"))
+        for found in nested:
+            if "rife_v2" in found.as_posix():
+                dest = models_dir / "rife_v2" / "rife_v4.6.onnx"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if found.resolve() != dest.resolve():
+                    shutil.copy2(found, dest)
 
     _ensure_python_pth(mpv_root)
     _progress(cb, "執行環境已就緒。請重新開啟 mpv。", 1.0)
@@ -178,18 +194,28 @@ def install_lua(mpv_root: Path) -> Path:
     return dest
 
 
+FLUID_VF_TOGGLE = '@fluid:vapoursynth="~~/shaders/fluid_rife.vpy":4:1'
+
+
 def ensure_input_binding(mpv_root: Path) -> None:
+    """F3 is owned by zz-fluid-ipc.lua. Strip old input.conf toggles (:8:4)."""
     conf = mpv_root / "input.conf"
-    marker = "Fluid Motion RIFE"
-    line = (
-        'F3 vf toggle @fluid:vapoursynth="~~/shaders/fluid_rife.vpy":8:4; '
-        'show-text "Fluid Motion RIFE 4.6 TensorRT" 2500\n'
-    )
-    if conf.is_file() and marker in conf.read_text(encoding="utf-8", errors="replace"):
+    if not conf.is_file():
         return
-    with conf.open("a", encoding="utf-8") as fh:
-        fh.write("\n# Fluid Motion\n")
-        fh.write(line)
+    text = conf.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    out: list[str] = []
+    changed = False
+    for raw in lines:
+        stripped = raw.lstrip()
+        if stripped.startswith("F3") and "fluid_rife" in raw:
+            out.append("# F3 is bound in scripts/zz-fluid-ipc.lua (toggle 開/關)")
+            changed = True
+        else:
+            out.append(raw)
+    if changed:
+        trailing = "\n" if text.endswith("\n") else ""
+        conf.write_text("\n".join(out) + trailing, encoding="utf-8")
 
 
 def autostart_path() -> Path:

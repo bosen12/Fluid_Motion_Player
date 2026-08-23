@@ -7,12 +7,24 @@ const PROFILES = [
   { id: "display", label: "螢幕" },
 ];
 
+const MODELS = [
+  { id: 426, label: "4.26" },
+  { id: 425, label: "4.25" },
+  { id: 46, label: "4.6" },
+];
+
+function modelLabel(id) {
+  const hit = MODELS.find((m) => Number(m.id) === Number(id));
+  return hit ? `RIFE ${hit.label}` : "RIFE";
+}
+
 const mock = {
   settings: {
     enabled: false,
     profile: "2x",
     scene_threshold: 0.1,
     trt_streams: 2,
+    rife_model: 426,
     autostart: false,
   },
   players: [],
@@ -30,7 +42,8 @@ const mock = {
       { id: "mpv", label: "mpv", ok: true },
       { id: "vapoursynth", label: "VapourSynth", ok: true },
       { id: "tensorrt", label: "TensorRT + CUDA", ok: false },
-      { id: "rife46", label: "RIFE 4.6 ONNX", ok: false },
+      { id: "rife46", label: "RIFE 4.6", ok: false },
+      { id: "rife425", label: "RIFE 4.25", ok: false },
     ],
   },
   error: "",
@@ -91,6 +104,15 @@ function renderProfiles(active) {
   }).join("");
 }
 
+function renderModels(active) {
+  const root = $("models");
+  if (!root) return;
+  root.innerHTML = MODELS.map((m) => {
+    const pressed = Number(m.id) === Number(active);
+    return `<button type="button" class="chip" data-model="${m.id}" aria-pressed="${pressed}">${m.label}</button>`;
+  }).join("");
+}
+
 function tickNumber(el, next) {
   if (el.textContent === next) return;
   el.textContent = next;
@@ -103,9 +125,17 @@ function render(state) {
   $("live-text").textContent = connected > 0 ? "已接上 mpv" : "等待 mpv";
   $("gpu-name").textContent = state.gpu.available ? state.gpu.name : "未偵測到 NVIDIA GPU";
 
-  const player = (state.players || []).find((p) => p.connected) || state.players[0];
-  tickNumber($("src-fps"), player && player.fps ? player.fps : "—");
-  tickNumber($("dst-fps"), player && player.estimated_vfps ? player.estimated_vfps : enabled ? "…" : "—");
+  const player = (state.players || []).find((p) => p.connected) || (state.players || [])[0];
+  const srcEl = $("src-fps");
+  const dstEl = $("dst-fps");
+  const dstBlock = dstEl.closest(".fps-block");
+  const outLabel = player && (player.output_fps || player.estimated_vfps);
+  tickNumber(srcEl, player && player.fps ? player.fps : "—");
+  tickNumber(dstEl, outLabel ? outLabel : enabled ? "…" : "—");
+  const bad = Boolean(player && player.fps_ok === false);
+  dstBlock.classList.toggle("is-bad", bad);
+  dstEl.classList.toggle("is-bad", bad);
+  dstEl.setAttribute("aria-invalid", bad ? "true" : "false");
 
   const toggle = $("toggle");
   setPressed(toggle, enabled);
@@ -115,6 +145,7 @@ function render(state) {
 
   renderPlayers(state.players || []);
   renderProfiles(state.settings.profile);
+  renderModels(state.settings.rife_model);
   renderChecks(state.runtime.checks);
 
   $("scene").value = state.settings.scene_threshold;
@@ -150,9 +181,18 @@ function render(state) {
     toast.style.borderLeftColor = "";
   }
 
-  $("engine-line").textContent = ready
-    ? "RIFE 4.6 · TensorRT · CUDA · 場景偵測已就緒"
-    : "還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。";
+  const engine = $("engine-line");
+  engine.classList.toggle("is-bad", bad);
+  if (!ready) {
+    engine.textContent = "還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。";
+  } else if (bad) {
+    const target = player && player.target_fps ? player.target_fps : "";
+    engine.textContent = target
+      ? `輸出偏低 · 目標 ${target} · 實測 ${outLabel} — 效能不足`
+      : "輸出偏低 — 效能不足";
+  } else {
+    engine.textContent = `${modelLabel(state.settings.rife_model)} · TensorRT · CUDA · 場景偵測已就緒`;
+  }
 }
 
 async function refresh() {
@@ -180,6 +220,13 @@ function bind() {
     render(state);
   });
 
+  $("models").addEventListener("click", async (event) => {
+    const btn = event.target.closest("[data-model]");
+    if (!btn) return;
+    const state = await call("set_model", Number(btn.dataset.model));
+    render(state);
+  });
+
   $("scene").addEventListener("input", () => {
     $("scene-val").textContent = Number($("scene").value).toFixed(2);
   });
@@ -196,8 +243,8 @@ function bind() {
     render(await call("start_setup"));
   });
   $("btn-hide").addEventListener("click", () => call("hide"));
-  $("btn-quit").addEventListener("click", () => call("hide"));
   $("btn-min").addEventListener("click", () => call("hide"));
+  $("btn-quit").addEventListener("click", () => call("quit"));
 }
 
 document.addEventListener("DOMContentLoaded", () => {

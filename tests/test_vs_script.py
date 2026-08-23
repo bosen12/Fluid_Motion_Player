@@ -4,6 +4,17 @@ from pathlib import Path
 from fluid_motion.core.vs_script import RifeParams, parse_fps, render_vpy, target_multi, write_vpy
 
 
+def test_rife_onnx_name_and_label():
+    from fluid_motion.core.vs_script import rife_label, rife_onnx_name
+
+    assert rife_onnx_name(46) == "rife_v4.6.onnx"
+    assert rife_onnx_name(425) == "rife_v4.25.onnx"
+    assert rife_onnx_name(426) == "rife_v4.26.onnx"
+    assert "4.25" in rife_label(425)
+    assert "4.26" in rife_label(426)
+    assert "4.6" in rife_label(46)
+
+
 def test_parse_fps_fraction_string():
     assert parse_fps("24000/1001") == Fraction(24000, 1001)
     assert parse_fps("24") == Fraction(24, 1)
@@ -30,18 +41,63 @@ def test_target_multi_60_from_film_is_fractional():
     assert float(multi) > 2
 
 
+def test_target_multi_60fps_source_stays_integer_2x():
+    multi, player = target_multi("120", Fraction(60000, 1001), None)
+    assert multi == 2
+    assert player is False
+
+
+def test_target_multi_3x_on_60fps_stays_3x():
+    multi, player = target_multi("3x", Fraction(60, 1), None)
+    assert multi == 3
+    assert player is False
+
+
+def test_target_multi_120_from_60_is_2x():
+    multi, player = target_multi("120", Fraction(60, 1), None)
+    assert multi == 2
+    assert player is False
+
+
+def test_target_multi_60_on_60fps_is_passthrough():
+    multi, player = target_multi("60", Fraction(60, 1), None)
+    assert multi == 1
+
+
+def test_target_multi_3x_on_film_stays_3x():
+    multi, player = target_multi("3x", Fraction(24, 1), None)
+    assert multi == 3
+    assert player is False
+
+
 def test_render_contains_rife_46_and_trt():
     text = render_vpy(RifeParams(mpv_root=r"C:\mpv", engine_folder=r"C:\cache"))
-    assert "RIFE_MODEL = 46" in text
+    assert "RIFE_MODEL = 426" in text
+    assert "rife_v4.26.onnx" in text
+    assert "use_jit_convolutions=False" in text
+    assert "rife_v4.6.onnx" in render_vpy(RifeParams(model=46, mpv_root=r"C:\mpv"))
     assert "Backend.TRT" in text
     assert "use_cuda_graph" in text
     assert "video_in" in text
     assert "SCDetect" in text
     assert "engine_folder" in text
+    assert "matrix_in=est_matrix" in text
+    assert "TRT_CUDA_GRAPH = False" in text
+    assert "core.num_threads = 1" in text
+    assert "AssumeFPS" in text
+    assert "vsmlrt-cuda" in text
+    assert "MAX_LEN" in text
+    assert "std.Trim" in text
+    assert "2 ** 31" not in text
+    assert "clip = RIFE(" in text
+    assert "RIFEMerge" not in text
+    assert "force_fp16=True" in text
+    assert "rife_v2" in text
+    assert ".get_frame(" not in text
 
 
 def test_write_vpy(tmp_path: Path):
     path = tmp_path / "fluid_rife.vpy"
     write_vpy(path, RifeParams(profile="2x", mpv_root=r"C:\mpv"))
     assert path.is_file()
-    assert "multi=2" in path.read_text(encoding="utf-8")
+    assert "MULTI = 2" in path.read_text(encoding="utf-8")

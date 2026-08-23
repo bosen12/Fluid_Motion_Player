@@ -330,6 +330,12 @@ button {
 
 .fps-block.target dd {
   color: var(--color-accent);
+  transition: color var(--dur-short) var(--ease-out);
+}
+
+.fps-block.target.is-bad dd,
+#dst-fps.is-bad {
+  color: var(--color-danger);
 }
 
 .gate-arrow {
@@ -344,6 +350,10 @@ button {
   padding-left: 18px;
   color: var(--color-muted);
   font-size: var(--text-sm);
+}
+
+.engine-line.is-bad {
+  color: var(--color-danger);
 }
 
 .controls {
@@ -413,6 +423,11 @@ button {
   font-weight: 600;
   font-style: normal;
   letter-spacing: 0.04em;
+}
+
+.chip-stack {
+  display: grid;
+  gap: var(--space-xs);
 }
 
 .profiles {

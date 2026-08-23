@@ -19,6 +19,9 @@ FluidMotion.exe
 engines/
 downloads/
 
+# mpv live caches if a full portable folder is copied in
+mpv/watch_later/
+
 # Local agent / editor
 .hallmark/
 .planning/
