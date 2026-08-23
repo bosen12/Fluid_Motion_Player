@@ -24,6 +24,7 @@ class Settings:
     autostart: bool = False
     mpv_root: str = field(default_factory=lambda: str(default_mpv_root()))
     rife_model: int = 426  # vsmlrt RIFEModel.v4_26 — 4.6 paints a waffle grid
+    force_accel: bool = False  # user override: skip the RTX 50 flicker-safe gate
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -373,6 +373,10 @@ button {
   color: var(--color-danger);
 }
 
+.engine-line.is-settling {
+  color: var(--color-accent);
+}
+
 .controls {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -517,6 +521,22 @@ input[type="range"] {
   width: 100%;
   margin-top: var(--space-xs);
   accent-color: var(--color-accent);
+}
+
+.force-accel {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2xs);
+  margin-top: var(--space-sm);
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+  cursor: pointer;
+}
+
+.force-accel input {
+  margin-top: 0.15rem;
+  accent-color: var(--color-danger);
+  flex-shrink: 0;
 }
 
 .cache-panel {

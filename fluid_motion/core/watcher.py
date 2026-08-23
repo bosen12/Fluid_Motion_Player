@@ -12,8 +12,10 @@ from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
 from fluid_motion.core.engine_cache import info as engine_cache_info
 from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
+    SETTLE_SECONDS,
     apply,
     interpolation_held_off,
+    is_settling,
     live_fps_label,
     live_source_fps,
     measured_output_fps,
@@ -39,6 +41,7 @@ class Engine:
         self._bootstrap_message = ""
         self._bootstrap_progress = 0.0
         self._bootstrapping = False
+        self._settling_until = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._on_change: Callable[[], None] | None = None
@@ -94,6 +97,9 @@ class Engine:
 
     def _held_off(self, seeking: bool = False) -> bool:
         return interpolation_held_off(seeking, self._seek_hold_age())
+
+    def _mark_settling(self) -> None:
+        self._settling_until = time.monotonic() + SETTLE_SECONDS
 
     def _consume_hotkey(self) -> None:
         path = hotkey_path()
@@ -182,7 +188,8 @@ class Engine:
                 paused=player.paused,
                 interpolating=player.interpolation,
             )
-            player.fps_ok = not short
+            player.settling = is_settling(short, time.monotonic(), self._settling_until)
+            player.fps_ok = not short or player.settling
             if measured:
                 label = live_fps_label(measured)
                 player.output_fps = label
@@ -208,6 +215,7 @@ class Engine:
                     try:
                         apply(ipc, self.settings, Path(self.settings.mpv_root))
                         player.interpolation = True
+                        self._mark_settling()
                         self._error = ""
                     except IpcError as exc:
                         self._error = str(exc)
@@ -242,6 +250,7 @@ class Engine:
                         self._error = ""
                         continue
                     apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)
+                    self._mark_settling()
                     self._error = ""
                 else:
                     remove(ipc, announce=True)
@@ -274,7 +283,7 @@ class Engine:
             "settings": self.settings.to_dict(),
             "players": players,
             "gpu": gpu,
-            "gpu_safe_mode": flicker_risk(gpu.get("name", "")),
+            "gpu_safe_mode": flicker_risk(gpu.get("name", "")) and not self.settings.force_accel,
             "runtime": runtime,
             "error": error,
             "bootstrap": boot,

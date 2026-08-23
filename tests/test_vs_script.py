@@ -130,6 +130,35 @@ def test_render_unknown_gpu_defaults_to_safe_mode():
     assert "TRT_STREAMS = 1" in text
 
 
+def test_render_force_accel_overrides_blackwell_safe_mode():
+    text = render_vpy(
+        RifeParams(
+            mpv_root=r"C:\mpv",
+            gpu_name="NVIDIA GeForce RTX 5070 Ti",
+            cuda_graph=True,
+            trt_streams=3,
+            force_accel=True,
+        )
+    )
+    assert "TRT_CUDA_GRAPH = True" in text
+    assert "TRT_STREAMS = 3" in text
+    assert "user override" in text
+
+
+def test_force_accel_has_no_effect_on_safe_gpu():
+    text = render_vpy(
+        RifeParams(
+            mpv_root=r"C:\mpv",
+            gpu_name="NVIDIA GeForce RTX 4090",
+            cuda_graph=True,
+            trt_streams=3,
+            force_accel=True,
+        )
+    )
+    assert "TRT_CUDA_GRAPH = True" in text
+    assert "user override" not in text
+
+
 def test_write_vpy(tmp_path: Path):
     path = tmp_path / "fluid_rife.vpy"
     write_vpy(path, RifeParams(profile="2x", mpv_root=r"C:\mpv"))

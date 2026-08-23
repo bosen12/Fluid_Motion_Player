@@ -31,6 +31,7 @@ const mock = {
     trt_streams: 2,
     rife_model: 426,
     autostart: false,
+    force_accel: false,
   },
   players: [],
   gpu: {
@@ -167,12 +168,13 @@ function render(state) {
   }
 
   const player = (state.players || []).find((p) => p.connected) || (state.players || [])[0];
+  const settling = Boolean(player && player.settling);
   const srcEl = $("src-fps");
   const dstEl = $("dst-fps");
   const dstBlock = dstEl.closest(".fps-block");
-  const outLabel = player && (player.output_fps || player.estimated_vfps);
+  const outLabel = !settling && player && (player.output_fps || player.estimated_vfps);
   tickNumber(srcEl, player && player.fps ? player.fps : "—");
-  tickNumber(dstEl, outLabel ? outLabel : enabled ? "…" : "—");
+  tickNumber(dstEl, outLabel ? outLabel : settling || enabled ? "…" : "—");
   const bad = Boolean(player && player.fps_ok === false);
   dstBlock.classList.toggle("is-bad", bad);
   dstEl.classList.toggle("is-bad", bad);
@@ -194,6 +196,7 @@ function render(state) {
   renderScenePresets(state.settings.scene_threshold);
   $("streams").value = state.settings.trt_streams;
   $("streams-val").textContent = String(state.settings.trt_streams);
+  $("force-accel").checked = Boolean(state.settings.force_accel);
   renderCache(state.engine_cache);
 
   const util = state.gpu.utilization || 0;
@@ -226,8 +229,11 @@ function render(state) {
 
   const engine = $("engine-line");
   engine.classList.toggle("is-bad", bad);
+  engine.classList.toggle("is-settling", settling);
   if (!ready) {
     engine.textContent = "還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。";
+  } else if (settling) {
+    engine.textContent = "切換中…正在套用新設定,請稍候";
   } else if (bad) {
     const target = player && player.target_fps ? player.target_fps : "";
     engine.textContent = target
@@ -287,6 +293,9 @@ function bind() {
   });
   $("streams").addEventListener("change", async () => {
     render(await call("set_streams", Number($("streams").value)));
+  });
+  $("force-accel").addEventListener("change", async () => {
+    render(await call("set_force_accel", $("force-accel").checked));
   });
   $("setup").addEventListener("click", async () => {
     render(await call("start_setup"));

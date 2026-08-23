@@ -43,6 +43,7 @@ class RifeParams:
     mpv_root: str = ""
     cache_size_mb: int = 8192
     gpu_name: str = ""
+    force_accel: bool = False
 
 
 def parse_fps(value: Any) -> Fraction | None:
@@ -114,11 +115,18 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
     engine_arg = f',\n        engine_folder=r"{engine}"' if engine else ""
     # CUDA graphs + parallel streams tile-flicker on RTX 50 (Blackwell); unknown
     # GPUs fail toward the same safe path instead of assuming they're fine.
-    safe_mode = flicker_risk(params.gpu_name)
+    # force_accel is a user-requested escape hatch to test past that gate.
+    risky = flicker_risk(params.gpu_name)
+    safe_mode = risky and not params.force_accel
     cuda_graph = False if safe_mode else bool(params.cuda_graph)
     streams = 1 if safe_mode else max(1, int(params.trt_streams))
     gpu_note = params.gpu_name or "unknown"
-    mode_note = "safe mode (no CUDA graph / single stream)" if safe_mode else "accelerated mode"
+    if safe_mode:
+        mode_note = "safe mode (no CUDA graph / single stream)"
+    elif risky:
+        mode_note = "accelerated mode — user override of flicker-risk GPU, may tile-flicker"
+    else:
+        mode_note = "accelerated mode"
 
     return f'''# Fluid Motion — RIFE TensorRT (generated, do not edit)
 # GPU: {gpu_note} — {mode_note}

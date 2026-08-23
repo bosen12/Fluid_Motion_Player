@@ -80,6 +80,10 @@
             <div class="field">
               <label for="streams">GPU 串流 <span id="streams-val">2</span></label>
               <input id="streams" type="range" min="1" max="3" step="1" value="2" />
+              <label class="force-accel">
+                <input type="checkbox" id="force-accel" />
+                <span>強制加速模式(略過 RTX 50 安全檢查,可能導致畫面閃爍)</span>
+              </label>
             </div>
             <div class="field cache-panel">
               <div class="cache-info">

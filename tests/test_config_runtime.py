@@ -19,6 +19,60 @@ def test_settings_roundtrip(tmp_path: Path):
     assert loaded.rife_model == 426
 
 
+class _FakeIpc:
+    """Duck-types MpvIpc without touching a real pipe/socket."""
+
+    def __init__(self, props: dict):
+        self.props = dict(props)
+        self.commands: list[tuple] = []
+        self.vf: list = []
+
+    def get(self, name: str):
+        if name == "vf":
+            return self.vf
+        return self.props.get(name)
+
+    def set(self, name: str, value):
+        self.props[name] = value
+
+    def command(self, *args, **kwargs):
+        self.commands.append(args)
+        if len(args) >= 2 and args[0] == "vf" and args[1] == "add":
+            self.vf = [{"name": "vapoursynth", "label": "fluid"}]
+        elif len(args) >= 2 and args[0] == "vf" and args[1] == "remove":
+            self.vf = []
+        return None
+
+
+def test_apply_applies_small_fractional_multiplier_instead_of_dropping_it(tmp_path: Path, monkeypatch):
+    from fluid_motion.core.inject import apply
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    ipc = _FakeIpc({"container-fps": 100, "estimated-vfps": 100, "vsync-ratio": 1})
+    settings = Settings(profile="120", mpv_root=str(tmp_path))
+    apply(ipc, settings, tmp_path)
+    add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
+    assert add_calls, "a 1.2x multiplier (100fps source -> 120 target) should still apply, not be dropped"
+
+
+def test_apply_skips_only_when_source_already_at_target(tmp_path: Path, monkeypatch):
+    from fluid_motion.core.inject import apply
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    ipc = _FakeIpc({"container-fps": 120, "estimated-vfps": 120, "vsync-ratio": 1})
+    settings = Settings(profile="120", mpv_root=str(tmp_path))
+    apply(ipc, settings, tmp_path)
+    add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
+    assert not add_calls, "source already at the target fps has nothing to interpolate"
+
+
+def test_force_accel_defaults_false_and_roundtrips(tmp_path: Path):
+    path = tmp_path / "config.json"
+    save_settings(Settings(force_accel=True), path)
+    assert load_settings(path).force_accel is True
+    assert Settings().force_accel is False
+
+
 def test_invalid_profile_falls_back():
     settings = Settings.from_dict({"profile": "nope"})
     assert settings.profile == "2x"
@@ -219,6 +273,32 @@ def test_measured_output_from_vsync_ratio():
     assert abs(measured_output_fps(60, 1, estimated_display=165) - 165) < 0.1
 
 
+def test_is_settling_true_within_grace_window_when_short():
+    from fluid_motion.core.inject import is_settling
+
+    assert is_settling(short=True, now=10.0, settling_until=12.0) is True
+
+
+def test_is_settling_false_after_grace_window_expires():
+    from fluid_motion.core.inject import is_settling
+
+    assert is_settling(short=True, now=13.0, settling_until=12.0) is False
+
+
+def test_is_settling_false_when_not_short():
+    from fluid_motion.core.inject import is_settling
+
+    assert is_settling(short=False, now=10.0, settling_until=12.0) is False
+
+
+def test_settling_indicator_wired_in_ui():
+    css = (ui_dir() / "styles.css").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "is-settling" in css
+    assert "settling" in js
+    assert "切換中" in js
+
+
 def test_output_shortfall_flags_stuck_at_source():
     from fluid_motion.core.inject import output_shortfall
 
@@ -272,3 +352,10 @@ def test_gpu_mode_badge_wired_in_ui():
     js = (ui_dir() / "app.js").read_text(encoding="utf-8")
     assert 'id="gpu-mode"' in html
     assert "gpu_safe_mode" in js
+
+
+def test_force_accel_override_wired_in_ui():
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert 'id="force-accel"' in html
+    assert "set_force_accel" in js

@@ -32,6 +32,7 @@ class PlayerProcess:
     output_fps: str = ""
     target_fps: str = ""
     fps_ok: bool = True
+    settling: bool = False
     interpolation: bool = False
     paused: bool = False
 

@@ -67,6 +67,7 @@ def interpolation_active(ipc: MpvIpc) -> bool:
 
 SHORTFALL_RATIO = 0.12
 SEEK_HOLD_MAX_AGE = 2.0
+SETTLE_SECONDS = 5.0
 
 
 def interpolation_held_off(
@@ -145,6 +146,16 @@ def output_shortfall(
     return actual < target * (1.0 - SHORTFALL_RATIO)
 
 
+def is_settling(short: bool, now: float, settling_until: float) -> bool:
+    """True while a just-applied filter change is still expected to be catching up.
+
+    A vf remove+add tears down and rebuilds the whole VapourSynth/TensorRT
+    pipeline, which visibly lags behind the new target for a few seconds —
+    that isn't a real performance shortfall, so don't report it as one.
+    """
+    return short and now < settling_until
+
+
 def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     def _get(name: str, default: Any = None) -> Any:
         try:
@@ -196,10 +207,14 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = F
         engine_folder=str(engine_cache_dir()),
         mpv_root=str(mpv_root),
         gpu_name=gpu_snapshot().name,
+        force_accel=settings.force_accel,
     )
     write_vpy(script, params, source_fps=source, display_fps=display)
     multi, _ = target_multi(settings.profile, source, display)
-    if float(multi) < 1.5:
+    # multi == 1 is target_multi's own sentinel for "source already at/above
+    # target" — nothing to gain there. Anything above that (even 1.2x) is a
+    # real ask and should be applied, not silently dropped.
+    if float(multi) <= 1.0:
         remove(ipc)
         return script
     _strip_other_vapoursynth(ipc)
