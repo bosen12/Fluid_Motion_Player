@@ -77,6 +77,46 @@ def test_apply_skips_only_when_source_already_at_target(tmp_path: Path, monkeypa
     assert not add_calls, "source already at the target fps has nothing to interpolate"
 
 
+def test_apply_lock_serializes_concurrent_apply_calls():
+    import threading
+    import time as time_mod
+
+    from fluid_motion.core.watcher import Engine
+
+    engine = Engine(Settings())
+    active = [0]
+    max_concurrent = [0]
+    guard = threading.Lock()
+
+    def critical_section():
+        with engine._apply_lock:
+            with guard:
+                active[0] += 1
+                max_concurrent[0] = max(max_concurrent[0], active[0])
+            time_mod.sleep(0.05)
+            with guard:
+                active[0] -= 1
+
+    threads = [threading.Thread(target=critical_section) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert max_concurrent[0] == 1, "tick() and set_enabled() must never apply() concurrently"
+
+
+def test_apply_lock_guards_every_apply_and_remove_call_site():
+    from fluid_motion.core import watcher as watcher_mod
+
+    src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
+    # tick()'s 3 branches (held-off remove, fresh apply, disabled remove) plus
+    # set_enabled()'s apply/remove -- every call site that touches mpv's vf
+    # filter must be inside the lock, or the background loop and a Bridge
+    # call can race and stomp on each other's write.
+    assert src.count("with self._apply_lock:") == 5
+
+
 def test_streams_slider_max_matches_config_clamp():
     from fluid_motion.config import Settings
 

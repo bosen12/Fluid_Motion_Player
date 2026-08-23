@@ -47,6 +47,12 @@ class Engine:
         self._engine_cache = engine_cache_info()
         self._engine_bytes = self._engine_cache.total_bytes
         self._engine_growing_until = 0.0
+        # Guards apply()/remove() specifically: tick() (background thread)
+        # and set_enabled()/update_settings() (pywebview bridge thread) both
+        # decide independently whether to re-apply, and a slow apply() (mpv
+        # rebuilding its pipeline) leaves a multi-second window where the two
+        # can race and stomp on each other's vf remove+add / .vpy write.
+        self._apply_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
@@ -220,7 +226,8 @@ class Engine:
             if held:
                 if player.interpolation:
                     try:
-                        remove(ipc)
+                        with self._apply_lock:
+                            remove(ipc)
                         player.interpolation = False
                         self._error = ""
                     except IpcError as exc:
@@ -228,7 +235,8 @@ class Engine:
             elif self.settings.enabled and self._runtime.ready:
                 if not player.interpolation:
                     try:
-                        apply(ipc, self.settings, Path(self.settings.mpv_root))
+                        with self._apply_lock:
+                            apply(ipc, self.settings, Path(self.settings.mpv_root))
                         player.interpolation = True
                         self._mark_settling()
                         self._error = ""
@@ -236,7 +244,8 @@ class Engine:
                         self._error = str(exc)
             elif player.interpolation:
                 try:
-                    remove(ipc)
+                    with self._apply_lock:
+                        remove(ipc)
                     player.interpolation = False
                     self._error = ""
                 except IpcError as exc:
@@ -271,11 +280,13 @@ class Engine:
                     if self._held_off():
                         self._error = ""
                         continue
-                    apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)
+                    with self._apply_lock:
+                        apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)
                     self._mark_settling()
                     self._error = ""
                 else:
-                    remove(ipc, announce=True)
+                    with self._apply_lock:
+                        remove(ipc, announce=True)
                     self._error = ""
             except IpcError as exc:
                 self._error = str(exc)
