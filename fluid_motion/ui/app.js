@@ -13,6 +13,11 @@ const MODELS = [
   { id: 46, label: "4.6" },
 ];
 
+const SCENE_PRESETS = [
+  { id: "live", label: "真人", value: 0.1 },
+  { id: "anime", label: "動畫", value: 0.15 },
+];
+
 function modelLabel(id) {
   const hit = MODELS.find((m) => Number(m.id) === Number(id));
   return hit ? `RIFE ${hit.label}` : "RIFE";
@@ -50,6 +55,8 @@ const mock = {
   bootstrap: { running: false, message: "", progress: 0 },
   player_count: 0,
   connected: 0,
+  gpu_safe_mode: true,
+  engine_cache: { count: 0, total_bytes: 0, path: "" },
 };
 
 function api() {
@@ -113,6 +120,29 @@ function renderModels(active) {
   }).join("");
 }
 
+function renderScenePresets(value) {
+  const root = $("scene-presets");
+  if (!root) return;
+  const current = Number(value);
+  root.innerHTML = SCENE_PRESETS.map((p) => {
+    const pressed = Math.abs(current - p.value) < 0.005;
+    return `<button type="button" class="chip chip-sm" data-scene-preset="${p.value}" aria-pressed="${pressed}">${p.label}</button>`;
+  }).join("");
+}
+
+function renderCache(cache) {
+  const stat = $("cache-stat");
+  if (!stat) return;
+  const info = cache || { count: 0, total_bytes: 0 };
+  if (!info.count) {
+    stat.textContent = "尚無快取";
+    return;
+  }
+  const gb = info.total_bytes / 1e9;
+  const size = gb >= 1 ? `${gb.toFixed(1)} GB` : `${(info.total_bytes / 1e6).toFixed(0)} MB`;
+  stat.textContent = `${info.count} 個引擎 · ${size}`;
+}
+
 function tickNumber(el, next) {
   if (el.textContent === next) return;
   el.textContent = next;
@@ -124,6 +154,17 @@ function render(state) {
   $("live").dataset.on = connected > 0 ? "true" : "false";
   $("live-text").textContent = connected > 0 ? "已接上 mpv" : "等待 mpv";
   $("gpu-name").textContent = state.gpu.available ? state.gpu.name : "未偵測到 NVIDIA GPU";
+  const gpuMode = $("gpu-mode");
+  if (gpuMode) {
+    if (!state.gpu.available) {
+      gpuMode.textContent = "";
+      gpuMode.removeAttribute("data-mode");
+    } else {
+      const safe = state.gpu_safe_mode !== false;
+      gpuMode.textContent = safe ? "安全模式" : "加速模式";
+      gpuMode.dataset.mode = safe ? "safe" : "fast";
+    }
+  }
 
   const player = (state.players || []).find((p) => p.connected) || (state.players || [])[0];
   const srcEl = $("src-fps");
@@ -150,8 +191,10 @@ function render(state) {
 
   $("scene").value = state.settings.scene_threshold;
   $("scene-val").textContent = Number(state.settings.scene_threshold).toFixed(2);
+  renderScenePresets(state.settings.scene_threshold);
   $("streams").value = state.settings.trt_streams;
   $("streams-val").textContent = String(state.settings.trt_streams);
+  renderCache(state.engine_cache);
 
   const util = state.gpu.utilization || 0;
   $("gpu-bar").style.width = `${util}%`;
@@ -233,6 +276,12 @@ function bind() {
   $("scene").addEventListener("change", async () => {
     render(await call("set_scene", Number($("scene").value)));
   });
+  $("scene-presets").addEventListener("click", async (event) => {
+    const btn = event.target.closest("[data-scene-preset]");
+    if (!btn) return;
+    const value = Number(btn.dataset.scenePreset);
+    render(await call("set_scene", value));
+  });
   $("streams").addEventListener("input", () => {
     $("streams-val").textContent = $("streams").value;
   });
@@ -242,6 +291,10 @@ function bind() {
   $("setup").addEventListener("click", async () => {
     render(await call("start_setup"));
   });
+  $("cache-clear").addEventListener("click", async () => {
+    render(await call("clear_engine_cache"));
+  });
+  $("cache-open").addEventListener("click", () => call("open_engine_cache"));
   $("btn-hide").addEventListener("click", () => call("hide"));
   $("btn-min").addEventListener("click", () => call("hide"));
   $("btn-quit").addEventListener("click", () => call("quit"));

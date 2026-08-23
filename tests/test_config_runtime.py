@@ -246,3 +246,29 @@ def test_fps_gate_marks_shortfall_in_ui():
     assert "--color-danger" in css
     assert "fps_ok" in js
     assert "效能不足" in js
+
+
+def test_scene_presets_wired_in_ui():
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert 'id="scene-presets"' in html
+    assert "SCENE_PRESETS" in js
+    assert "data-scene-preset" in js
+    assert "set_scene" in js
+
+
+def test_engine_cache_panel_wired_in_ui():
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert 'id="cache-clear"' in html
+    assert 'id="cache-open"' in html
+    assert "clear_engine_cache" in js
+    assert "open_engine_cache" in js
+    assert "renderCache" in js
+
+
+def test_gpu_mode_badge_wired_in_ui():
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert 'id="gpu-mode"' in html
+    assert "gpu_safe_mode" in js

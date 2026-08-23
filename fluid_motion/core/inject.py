@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings
+from fluid_motion.core.gpu import snapshot as gpu_snapshot
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc
 from fluid_motion.core.vs_script import RifeParams, parse_fps, rife_label, target_multi, write_vpy
 from fluid_motion.paths import engine_cache_dir, script_output_path
@@ -194,6 +195,7 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = F
         profile=settings.profile,
         engine_folder=str(engine_cache_dir()),
         mpv_root=str(mpv_root),
+        gpu_name=gpu_snapshot().name,
     )
     write_vpy(script, params, source_fps=source, display_fps=display)
     multi, _ = target_multi(settings.profile, source, display)

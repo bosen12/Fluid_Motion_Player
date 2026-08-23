@@ -9,7 +9,8 @@ from typing import Any
 from fluid_motion.config import Settings, save_settings
 from fluid_motion.paths import heartbeat_path, hotkey_path, seek_hold_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
-from fluid_motion.core.gpu import snapshot as gpu_snapshot
+from fluid_motion.core.engine_cache import info as engine_cache_info
+from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
     apply,
     interpolation_held_off,
@@ -273,12 +274,14 @@ class Engine:
             "settings": self.settings.to_dict(),
             "players": players,
             "gpu": gpu,
+            "gpu_safe_mode": flicker_risk(gpu.get("name", "")),
             "runtime": runtime,
             "error": error,
             "bootstrap": boot,
             "mpv_exe": str(exe) if exe else "",
             "player_count": len(players),
             "connected": sum(1 for p in players if p.get("connected")),
+            "engine_cache": engine_cache_info().to_dict(),
         }
 
     def start_bootstrap(self) -> None:

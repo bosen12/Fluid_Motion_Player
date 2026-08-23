@@ -164,6 +164,23 @@ button {
   background: currentColor;
 }
 
+.gpu-mode {
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-paper-3);
+  color: var(--color-muted);
+}
+
+.gpu-mode:empty {
+  display: none;
+}
+
+.gpu-mode[data-mode="fast"] {
+  color: var(--color-live);
+}
+
 .window-btns {
   display: flex;
   align-items: center;
@@ -463,6 +480,12 @@ button {
   opacity: 0.4;
 }
 
+.chip-sm {
+  min-height: 26px;
+  padding: 0.15rem 0.6rem;
+  font-size: var(--text-xs);
+}
+
 .sliders {
   display: grid;
   grid-template-columns: 1.4fr 0.8fr;
@@ -483,10 +506,69 @@ button {
   color: var(--color-muted);
 }
 
+.scene-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+  margin-top: var(--space-2xs);
+}
+
 input[type="range"] {
   width: 100%;
   margin-top: var(--space-xs);
   accent-color: var(--color-accent);
+}
+
+.cache-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.cache-info {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+.cache-label {
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cache-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.cache-actions button {
+  min-height: 34px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  transition: background-color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out);
+}
+
+.cache-actions button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-ink);
+}
+
+#cache-clear:hover {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .footer-bar {

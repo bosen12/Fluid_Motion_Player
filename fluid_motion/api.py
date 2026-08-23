@@ -46,6 +46,19 @@ class Bridge:
         self.engine.start_bootstrap()
         return self.get_state()
 
+    def clear_engine_cache(self) -> dict[str, Any]:
+        from fluid_motion.core.engine_cache import clear
+
+        clear()
+        return self.get_state()
+
+    def open_engine_cache(self) -> None:
+        import os
+
+        from fluid_motion.paths import engine_cache_dir
+
+        os.startfile(str(engine_cache_dir()))  # noqa: S606 — local folder, Windows-only app
+
     def hide(self) -> None:
         self._hide()
 

@@ -96,6 +96,40 @@ def test_render_contains_rife_46_and_trt():
     assert ".get_frame(" not in text
 
 
+def test_render_blackwell_gpu_forces_safe_mode_even_if_requested_fast():
+    text = render_vpy(
+        RifeParams(
+            mpv_root=r"C:\mpv",
+            gpu_name="NVIDIA GeForce RTX 5070 Ti",
+            cuda_graph=True,
+            trt_streams=3,
+        )
+    )
+    assert "TRT_CUDA_GRAPH = False" in text
+    assert "TRT_STREAMS = 1" in text
+    assert "safe mode" in text
+
+
+def test_render_non_blackwell_gpu_honors_requested_settings():
+    text = render_vpy(
+        RifeParams(
+            mpv_root=r"C:\mpv",
+            gpu_name="NVIDIA GeForce RTX 4090",
+            cuda_graph=True,
+            trt_streams=3,
+        )
+    )
+    assert "TRT_CUDA_GRAPH = True" in text
+    assert "TRT_STREAMS = 3" in text
+    assert "accelerated mode" in text
+
+
+def test_render_unknown_gpu_defaults_to_safe_mode():
+    text = render_vpy(RifeParams(mpv_root=r"C:\mpv", cuda_graph=True, trt_streams=3))
+    assert "TRT_CUDA_GRAPH = False" in text
+    assert "TRT_STREAMS = 1" in text
+
+
 def test_write_vpy(tmp_path: Path):
     path = tmp_path / "fluid_rife.vpy"
     write_vpy(path, RifeParams(profile="2x", mpv_root=r"C:\mpv"))

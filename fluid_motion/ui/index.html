@@ -26,6 +26,7 @@
           <div class="meta">
             <span class="live" id="live" data-on="false"><span class="live-dot" aria-hidden="true"></span><span id="live-text">等待 mpv</span></span>
             <span id="gpu-name">GPU</span>
+            <span class="gpu-mode" id="gpu-mode"></span>
           </div>
         </div>
         <div class="window-btns">
@@ -73,11 +74,22 @@
           <section class="sliders">
             <div class="field">
               <label for="scene">場景切換閾值 <span id="scene-val">0.10</span></label>
+              <div class="scene-presets" id="scene-presets" role="group" aria-label="場景閾值預設"></div>
               <input id="scene" type="range" min="0.04" max="0.22" step="0.01" value="0.10" />
             </div>
             <div class="field">
               <label for="streams">GPU 串流 <span id="streams-val">2</span></label>
               <input id="streams" type="range" min="1" max="3" step="1" value="2" />
+            </div>
+            <div class="field cache-panel">
+              <div class="cache-info">
+                <span class="cache-label">Engine 快取</span>
+                <span id="cache-stat">—</span>
+              </div>
+              <div class="cache-actions">
+                <button type="button" id="cache-open">開啟資料夾</button>
+                <button type="button" id="cache-clear">清除快取</button>
+              </div>
             </div>
           </section>
         </main>

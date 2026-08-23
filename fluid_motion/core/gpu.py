@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
@@ -7,6 +8,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from fluid_motion.core.proc import run_hidden
+
+_RTX_SERIES_RE = re.compile(r"RTX\s*(\d{4,5})", re.IGNORECASE)
 
 
 @dataclass
@@ -85,3 +88,16 @@ def snapshot() -> GpuSnapshot:
     )
     _CACHE = (now, snap)
     return snap
+
+
+def flicker_risk(name: str) -> bool:
+    """RTX 50-series (Blackwell) tile-flickers with CUDA graphs / multiple TRT streams.
+
+    Names we can't parse (unknown GPU, nvidia-smi unavailable) are treated as
+    risky too — better to give up some throughput than ship visible corruption.
+    """
+    match = _RTX_SERIES_RE.search(name or "")
+    if not match:
+        return True
+    series = int(match.group(1)[:2])
+    return series == 50

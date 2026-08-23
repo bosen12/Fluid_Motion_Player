@@ -5,6 +5,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from fluid_motion.core.gpu import flicker_risk
+
 
 RIFE_46 = 46
 RIFE_425 = 425
@@ -40,6 +42,7 @@ class RifeParams:
     engine_folder: str = ""
     mpv_root: str = ""
     cache_size_mb: int = 8192
+    gpu_name: str = ""
 
 
 def parse_fps(value: Any) -> Fraction | None:
@@ -109,11 +112,16 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
     multi, _video_player = target_multi(params.profile, source_fps, display_fps)
     engine = Path(params.engine_folder).as_posix() if params.engine_folder else ""
     engine_arg = f',\n        engine_folder=r"{engine}"' if engine else ""
-    # CUDA graphs + parallel streams on RTX 50 flicker as a tile grid.
-    cuda_graph = False
-    streams = 1
+    # CUDA graphs + parallel streams tile-flicker on RTX 50 (Blackwell); unknown
+    # GPUs fail toward the same safe path instead of assuming they're fine.
+    safe_mode = flicker_risk(params.gpu_name)
+    cuda_graph = False if safe_mode else bool(params.cuda_graph)
+    streams = 1 if safe_mode else max(1, int(params.trt_streams))
+    gpu_note = params.gpu_name or "unknown"
+    mode_note = "safe mode (no CUDA graph / single stream)" if safe_mode else "accelerated mode"
 
     return f'''# Fluid Motion — RIFE TensorRT (generated, do not edit)
+# GPU: {gpu_note} — {mode_note}
 import os
 import sys
 from fractions import Fraction
