@@ -299,6 +299,19 @@ def test_settling_indicator_wired_in_ui():
     assert "切換中" in js
 
 
+def test_heartbeat_runs_on_its_own_thread_independent_of_tick():
+    from fluid_motion.core import watcher as watcher_mod
+
+    src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
+    assert "_heartbeat_loop" in src
+    assert "_heartbeat_thread" in src
+    assert "fluid-heartbeat" in src
+    # tick() must not be the only writer, or a slow apply() call (mpv
+    # rebuilding the VS/TensorRT pipeline) starves the heartbeat past the
+    # Lua side's 4s alive window and F3 wrongly reports Fluid Motion as dead.
+    assert src.count("self._write_heartbeat()") >= 2
+
+
 def test_output_shortfall_flags_stuck_at_source():
     from fluid_motion.core.inject import output_shortfall
 

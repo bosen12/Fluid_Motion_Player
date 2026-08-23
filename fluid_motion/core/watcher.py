@@ -44,6 +44,7 @@ class Engine:
         self._settling_until = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
         self._on_change: Callable[[], None] | None = None
         self._on_show: Callable[[], None] | None = None
 
@@ -62,6 +63,11 @@ class Engine:
             self._error = str(exc)
         self._thread = threading.Thread(target=self._loop, name="fluid-watcher", daemon=True)
         self._thread.start()
+        # Own thread: a slow vf apply (mpv rebuilding the VS/TensorRT pipeline
+        # can take well over the Lua side's 4s alive window) must not stall
+        # this, or mpv wrongly reports Fluid Motion as not running mid-apply.
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name="fluid-heartbeat", daemon=True)
+        self._heartbeat_thread.start()
         self._write_heartbeat()
 
     def set_on_show(self, on_show: Callable[[], None] | None) -> None:
@@ -123,6 +129,10 @@ class Engine:
                 self._on_show()
             except Exception:
                 pass
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop.wait(1.0):
+            self._write_heartbeat()
 
     def _loop(self) -> None:
         while not self._stop.wait(0.3):
