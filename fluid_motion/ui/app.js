@@ -11,6 +11,7 @@ const MODELS = [
   { id: 426, label: "4.26" },
   { id: 425, label: "4.25" },
   { id: 46, label: "4.6" },
+  { id: 4251, label: "4.25 輕量" },
 ];
 
 const SCENE_PRESETS = [

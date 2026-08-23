@@ -13,6 +13,9 @@ def test_rife_onnx_name_and_label():
     assert "4.25" in rife_label(425)
     assert "4.26" in rife_label(426)
     assert "4.6" in rife_label(46)
+    assert rife_onnx_name(4251) == "rife_v4.25_lite.onnx"
+    assert "4.25" in rife_label(4251)
+    assert "lite" in rife_label(4251)
 
 
 def test_parse_fps_fraction_string():

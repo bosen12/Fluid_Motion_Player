@@ -101,6 +101,7 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
     onnx46 = _find_onnx(46)
     onnx425 = _find_onnx(425)
     onnx426 = _find_onnx(426)
+    onnx425lite = _find_onnx(4251)
     onnx = onnx426 or onnx425 or onnx46
     checks.append(
         Check("rife46", rife_label(46), onnx46 is not None, str(onnx46) if onnx46 else "尚未下載 rife_v4.6.onnx")
@@ -111,13 +112,23 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
     checks.append(
         Check("rife426", rife_label(426), onnx426 is not None, str(onnx426) if onnx426 else "尚未下載 rife_v4.26.onnx")
     )
+    # Optional: faster, lower-quality network for resolutions/multipliers the
+    # regular models can't keep up with in real time. Never required for ready.
+    checks.append(
+        Check(
+            "rife425lite",
+            rife_label(4251),
+            onnx425lite is not None,
+            str(onnx425lite) if onnx425lite else "尚未下載 rife_v4.25_lite.onnx（選用，較快但畫質較低）",
+        )
+    )
 
     python_ok = (root / "python.exe").is_file() and (root / "python312.dll").is_file()
     checks.append(
         Check("python", "mpv 內嵌 Python 3.12", python_ok, str(root / "python.exe") if python_ok else "缺少內嵌 Python")
     )
 
-    core_ok = all(c.ok for c in checks if c.id not in {"rife46", "rife425", "rife426"})
+    core_ok = all(c.ok for c in checks if c.id not in {"rife46", "rife425", "rife426", "rife425lite"})
     ready = core_ok and (onnx46 is not None or onnx425 is not None or onnx426 is not None)
     return RuntimeStatus(
         mpv_root=str(root),

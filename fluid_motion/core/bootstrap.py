@@ -143,6 +143,18 @@ def install_runtime(mpv_root: Path, cb: Progress | None = None) -> None:
         _download(f"{GITHUB_MODELS}/rife_v4.26.7z", m426, cb, "RIFE 4.26", (0.93, 0.96))
         _extract(m426, models_dir, seven)
 
+    # Optional (faster/lower-quality): don't let a failure here break the
+    # required models the rest of the app depends on being ready.
+    if not (models_dir / "rife" / "rife_v4.25_lite.onnx").is_file() and not (
+        models_dir / "rife_v2" / "rife_v4.25_lite.onnx"
+    ).is_file():
+        try:
+            m425_lite = cache / "rife_v4.25_lite.7z"
+            _download(f"{GITHUB_MODELS}/rife_v4.25_lite.7z", m425_lite, cb, "RIFE 4.25 lite", (0.96, 0.97))
+            _extract(m425_lite, models_dir, seven)
+        except (OSError, RuntimeError) as exc:
+            _progress(cb, f"RIFE 4.25 lite 為選用項目，跳過（{exc}）", 0.97)
+
     if not (models_dir / "rife_v2" / "rife_v4.6.onnx").is_file():
         v2_arc = cache / "rife_v2_v4.7z"
         _download(f"{GITHUB_MODELS}/rife_v2_v4.7z", v2_arc, cb, "RIFE v2 / v4", (0.90, 0.96))

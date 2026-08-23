@@ -217,6 +217,11 @@ def test_invalid_rife_model_falls_back():
     assert settings.rife_model == 426
 
 
+def test_rife_425_lite_model_is_valid():
+    settings = Settings.from_dict({"rife_model": 4251})
+    assert settings.rife_model == 4251
+
+
 def test_diagnose_missing_tree(tmp_path: Path):
     status = diagnose(tmp_path)
     assert status.ready is False
@@ -242,6 +247,29 @@ def test_diagnose_ready_when_files_present(tmp_path: Path):
     (models / "rife_v4.6.onnx").write_bytes(b"onnx")
     status = diagnose(tmp_path)
     assert status.ready is True
+    # Optional lite model was never downloaded here -- must not block ready.
+    ids = {c.id: c.ok for c in status.checks}
+    assert ids["rife425lite"] is False
+
+
+def test_diagnose_detects_lite_model_when_present(tmp_path: Path):
+    (tmp_path / "mpv.exe").write_bytes(b"mz")
+    (tmp_path / "vapoursynth.dll").write_bytes(b"dll")
+    (tmp_path / "python.exe").write_bytes(b"py")
+    (tmp_path / "python312.dll").write_bytes(b"dll")
+    plugins = tmp_path / "vs-plugins"
+    plugins.mkdir()
+    (plugins / "MiscFilters.dll").write_bytes(b"dll")
+    (plugins / "vstrt.dll").write_bytes(b"dll")
+    (plugins / "nvinfer.dll").write_bytes(b"dll")
+    (tmp_path / "vsmlrt.py").write_text("x", encoding="utf-8")
+    models = plugins / "models" / "rife"
+    models.mkdir(parents=True)
+    (models / "rife_v4.6.onnx").write_bytes(b"onnx")
+    (models / "rife_v4.25_lite.onnx").write_bytes(b"onnx")
+    status = diagnose(tmp_path)
+    ids = {c.id: c.ok for c in status.checks}
+    assert ids["rife425lite"] is True
 
 
 def test_vf_is_fluid_detects_labeled_and_unlabeled():
@@ -519,6 +547,11 @@ def test_force_accel_override_wired_in_ui():
     js = (ui_dir() / "app.js").read_text(encoding="utf-8")
     assert 'id="force-accel"' in html
     assert "set_force_accel" in js
+
+
+def test_rife_425_lite_model_wired_in_ui():
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "4251" in js
 
 
 def _tick_engine(monkeypatch, settings, ipc, pid=4321):
