@@ -54,3 +54,15 @@ def clear(path: Path | None = None) -> tuple[int, int]:
         except OSError:
             pass
     return deleted, locked
+
+
+def next_growth_deadline(current_bytes: int, previous_bytes: int, now: float, prior_deadline: float, grace: float) -> float:
+    """Extend the "still compiling" deadline whenever the cache grew since the last sample.
+
+    There's no way to know vsmlrt's engine filename for a given resolution/model
+    ahead of time, so this treats "the cache directory is actively growing" as
+    the signal that a TensorRT engine is being built right now.
+    """
+    if current_bytes > previous_bytes:
+        return now + grace
+    return prior_deadline

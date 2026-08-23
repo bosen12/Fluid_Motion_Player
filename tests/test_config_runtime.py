@@ -77,6 +77,14 @@ def test_apply_skips_only_when_source_already_at_target(tmp_path: Path, monkeypa
     assert not add_calls, "source already at the target fps has nothing to interpolate"
 
 
+def test_streams_slider_max_matches_config_clamp():
+    from fluid_motion.config import Settings
+
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    clamped = Settings.from_dict({"trt_streams": 999}).trt_streams
+    assert f'id="streams" type="range" min="1" max="{clamped}"' in html
+
+
 def test_force_accel_defaults_false_and_roundtrips(tmp_path: Path):
     path = tmp_path / "config.json"
     save_settings(Settings(force_accel=True), path)
@@ -321,6 +329,14 @@ def test_heartbeat_runs_on_its_own_thread_independent_of_tick():
     # rebuilding the VS/TensorRT pipeline) starves the heartbeat past the
     # Lua side's 4s alive window and F3 wrongly reports Fluid Motion as dead.
     assert src.count("self._write_heartbeat()") >= 2
+
+
+def test_engine_compiling_indicator_wired_in_ui():
+    css = (ui_dir() / "styles.css").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "is-compiling" in css
+    assert "engine_compiling" in js
+    assert "首次編譯" in js
 
 
 def test_output_shortfall_flags_stuck_at_source():

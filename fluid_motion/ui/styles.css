@@ -373,7 +373,8 @@ button {
   color: var(--color-danger);
 }
 
-.engine-line.is-settling {
+.engine-line.is-settling,
+.engine-line.is-compiling {
   color: var(--color-accent);
 }
 

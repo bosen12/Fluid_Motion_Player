@@ -58,6 +58,7 @@ const mock = {
   connected: 0,
   gpu_safe_mode: true,
   engine_cache: { count: 0, total_bytes: 0, path: "" },
+  engine_compiling: false,
 };
 
 function api() {
@@ -168,14 +169,15 @@ function render(state) {
   }
 
   const player = (state.players || []).find((p) => p.connected) || (state.players || [])[0];
-  const settling = Boolean(player && player.settling);
+  const compiling = Boolean(state.engine_compiling);
+  const settling = !compiling && Boolean(player && player.settling);
   const srcEl = $("src-fps");
   const dstEl = $("dst-fps");
   const dstBlock = dstEl.closest(".fps-block");
-  const outLabel = !settling && player && (player.output_fps || player.estimated_vfps);
+  const outLabel = !compiling && !settling && player && (player.output_fps || player.estimated_vfps);
   tickNumber(srcEl, player && player.fps ? player.fps : "—");
-  tickNumber(dstEl, outLabel ? outLabel : settling || enabled ? "…" : "—");
-  const bad = Boolean(player && player.fps_ok === false);
+  tickNumber(dstEl, outLabel ? outLabel : compiling ? "編譯中" : settling || enabled ? "…" : "—");
+  const bad = !compiling && Boolean(player && player.fps_ok === false);
   dstBlock.classList.toggle("is-bad", bad);
   dstEl.classList.toggle("is-bad", bad);
   dstEl.setAttribute("aria-invalid", bad ? "true" : "false");
@@ -230,8 +232,11 @@ function render(state) {
   const engine = $("engine-line");
   engine.classList.toggle("is-bad", bad);
   engine.classList.toggle("is-settling", settling);
+  engine.classList.toggle("is-compiling", compiling);
   if (!ready) {
     engine.textContent = "還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。";
+  } else if (compiling) {
+    engine.textContent = "首次編譯 TensorRT 引擎中…可能需要數十秒到數分鐘,請稍候";
   } else if (settling) {
     engine.textContent = "切換中…正在套用新設定,請稍候";
   } else if (bad) {

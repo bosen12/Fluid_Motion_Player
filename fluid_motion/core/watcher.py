@@ -9,7 +9,7 @@ from typing import Any
 from fluid_motion.config import Settings, save_settings
 from fluid_motion.paths import heartbeat_path, hotkey_path, seek_hold_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
-from fluid_motion.core.engine_cache import info as engine_cache_info
+from fluid_motion.core.engine_cache import info as engine_cache_info, next_growth_deadline
 from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
     SETTLE_SECONDS,
@@ -28,6 +28,8 @@ from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
 from fluid_motion.core.runtime import diagnose
 from fluid_motion.core.vs_script import parse_fps, target_multi
 
+ENGINE_GROWTH_GRACE = 3.0
+
 
 class Engine:
     def __init__(self, settings: Settings):
@@ -42,6 +44,9 @@ class Engine:
         self._bootstrap_progress = 0.0
         self._bootstrapping = False
         self._settling_until = 0.0
+        self._engine_cache = engine_cache_info()
+        self._engine_bytes = self._engine_cache.total_bytes
+        self._engine_growing_until = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
@@ -239,11 +244,18 @@ class Engine:
         for pid, ipc in old.items():
             if pid not in live:
                 ipc.close()
+        cache = engine_cache_info()
+        now = time.monotonic()
+        self._engine_growing_until = next_growth_deadline(
+            cache.total_bytes, self._engine_bytes, now, self._engine_growing_until, ENGINE_GROWTH_GRACE
+        )
+        self._engine_bytes = cache.total_bytes
         with self._lock:
             self._ipc = live
             self._players = players
             self._gpu = gpu_snapshot()
             self._runtime = diagnose(self.settings.mpv_root)
+            self._engine_cache = cache
 
     def set_enabled(self, enabled: bool) -> None:
         self.settings.enabled = bool(enabled)
@@ -283,6 +295,8 @@ class Engine:
             gpu = self._gpu.to_dict()
             runtime = self._runtime.to_dict()
             error = self._error
+            engine_cache = self._engine_cache.to_dict()
+            engine_growing_until = self._engine_growing_until
             boot = {
                 "running": self._bootstrapping,
                 "message": self._bootstrap_message,
@@ -300,7 +314,8 @@ class Engine:
             "mpv_exe": str(exe) if exe else "",
             "player_count": len(players),
             "connected": sum(1 for p in players if p.get("connected")),
-            "engine_cache": engine_cache_info().to_dict(),
+            "engine_cache": engine_cache,
+            "engine_compiling": time.monotonic() < engine_growing_until,
         }
 
     def start_bootstrap(self) -> None:

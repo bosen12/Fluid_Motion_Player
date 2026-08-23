@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fluid_motion.core.engine_cache import clear, info
+from fluid_motion.core.engine_cache import clear, info, next_growth_deadline
 
 
 def test_info_on_empty_dir(tmp_path: Path):
@@ -45,3 +45,18 @@ def test_clear_on_missing_dir_is_a_noop(tmp_path: Path):
     deleted, locked = clear(missing)
     assert deleted == 0
     assert locked == 0
+
+
+def test_next_growth_deadline_extends_on_growth():
+    deadline = next_growth_deadline(current_bytes=200, previous_bytes=100, now=10.0, prior_deadline=5.0, grace=3.0)
+    assert deadline == 13.0
+
+
+def test_next_growth_deadline_holds_when_unchanged():
+    deadline = next_growth_deadline(current_bytes=100, previous_bytes=100, now=10.0, prior_deadline=5.0, grace=3.0)
+    assert deadline == 5.0
+
+
+def test_next_growth_deadline_holds_when_shrinking():
+    deadline = next_growth_deadline(current_bytes=50, previous_bytes=100, now=10.0, prior_deadline=5.0, grace=3.0)
+    assert deadline == 5.0
