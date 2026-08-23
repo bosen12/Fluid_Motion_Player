@@ -21,6 +21,7 @@ from fluid_motion.core.inject import (
     measured_output_fps,
     output_shortfall,
     remove,
+    resolve_multi,
     snapshot_playback,
 )
 from fluid_motion.core.mpv_detect import PlayerProcess, find_mpv_executable, iter_mpv_processes, mpv_root_from
@@ -29,6 +30,9 @@ from fluid_motion.core.runtime import diagnose
 from fluid_motion.core.vs_script import parse_fps, target_multi
 
 ENGINE_GROWTH_GRACE = 3.0
+# A failed apply() is retried by the next tick, but not at the 0.3s tick rate:
+# an mpv that is refusing vf commands would otherwise be hammered forever.
+APPLY_RETRY_BACKOFF = 2.0
 
 
 class Engine:
@@ -53,6 +57,14 @@ class Engine:
         # rebuilding its pipeline) leaves a multi-second window where the two
         # can race and stomp on each other's vf remove+add / .vpy write.
         self._apply_lock = threading.Lock()
+        # The settings that actually reached each mpv. player.interpolation
+        # only says *a* filter is loaded, never whether it matches the current
+        # settings -- so a change that got skipped (seek hold-off) or failed
+        # (IpcError) used to leave mpv running the old filter forever, with
+        # nothing left to notice the mismatch. Comparing against this snapshot
+        # is what makes the next tick pick the change back up.
+        self._applied: dict[int, tuple] = {}
+        self._retry_at: dict[int, float] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
@@ -117,6 +129,61 @@ class Engine:
 
     def _mark_settling(self) -> None:
         self._settling_until = time.monotonic() + SETTLE_SECONDS
+
+    def _filter_key(self, multi: int) -> tuple:
+        """Everything that changes the generated .vpy, plus the resolved multi.
+
+        multi is part of the key so that switching to a file with a different
+        source fps re-applies too -- mpv keeps the vf across file loads, and the
+        old multiplier is wrong for the new source.
+        """
+        cfg = self.settings
+        return (
+            cfg.profile,
+            int(cfg.rife_model),
+            float(cfg.scene_threshold),
+            int(cfg.trt_streams),
+            bool(cfg.fp16),
+            bool(cfg.cuda_graph),
+            bool(cfg.force_accel),
+            str(cfg.mpv_root),
+            int(multi),
+        )
+
+    def _invalidate(self, pid: int) -> None:
+        """Forget what was applied, so the next tick re-applies from scratch."""
+        with self._lock:
+            self._applied.pop(pid, None)
+
+    def _apply_to(self, pid: int, ipc: MpvIpc, multi: int, *, announce: bool = False) -> bool:
+        """Apply the current settings and record them. False if mpv refused."""
+        key = self._filter_key(multi)
+        try:
+            with self._apply_lock:
+                apply(ipc, self.settings, Path(self.settings.mpv_root), announce=announce)
+        except IpcError as exc:
+            self._error = str(exc)
+            with self._lock:
+                self._applied.pop(pid, None)
+                self._retry_at[pid] = time.monotonic() + APPLY_RETRY_BACKOFF
+            return False
+        with self._lock:
+            self._applied[pid] = key
+            self._retry_at.pop(pid, None)
+        self._mark_settling()
+        self._error = ""
+        return True
+
+    def _remove_from(self, pid: int, ipc: MpvIpc, *, announce: bool = False) -> bool:
+        try:
+            with self._apply_lock:
+                remove(ipc, announce=announce)
+        except IpcError as exc:
+            self._error = str(exc)
+            return False
+        self._invalidate(pid)
+        self._error = ""
+        return True
 
     def _consume_hotkey(self) -> None:
         path = hotkey_path()
@@ -223,36 +290,39 @@ class Engine:
                 player.estimated_vfps = ""
             live[player.pid] = ipc
             held = self._held_off(bool(info.get("seeking")))
+            want_multi = resolve_multi(info, self.settings)
+            with self._lock:
+                applied = self._applied.get(player.pid)
+                retry_at = self._retry_at.get(player.pid, 0.0)
             if held:
+                # The hold-off drops the filter but must not count as a settled
+                # state: forget the snapshot so the settings are re-applied once
+                # the seek quiets down, even if nothing else changes afterwards.
                 if player.interpolation:
-                    try:
-                        with self._apply_lock:
-                            remove(ipc)
+                    if self._remove_from(player.pid, ipc):
                         player.interpolation = False
-                        self._error = ""
-                    except IpcError as exc:
-                        self._error = str(exc)
+                else:
+                    self._invalidate(player.pid)
             elif self.settings.enabled and self._runtime.ready:
-                if not player.interpolation:
-                    try:
-                        with self._apply_lock:
-                            apply(ipc, self.settings, Path(self.settings.mpv_root))
-                        player.interpolation = True
-                        self._mark_settling()
-                        self._error = ""
-                    except IpcError as exc:
-                        self._error = str(exc)
-            elif player.interpolation:
-                try:
-                    with self._apply_lock:
-                        remove(ipc)
+                # Stale settings, not just a missing filter. multi <= 1 is a
+                # legitimately applied no-op (nothing left to interpolate), so it
+                # must not read as "filter missing" and re-apply every tick.
+                stale = applied != self._filter_key(want_multi)
+                missing = want_multi > 1 and not player.interpolation
+                if (stale or missing) and time.monotonic() >= retry_at:
+                    if self._apply_to(player.pid, ipc, want_multi):
+                        player.interpolation = want_multi > 1
+            elif player.interpolation or applied is not None:
+                if self._remove_from(player.pid, ipc):
                     player.interpolation = False
-                    self._error = ""
-                except IpcError as exc:
-                    self._error = str(exc)
         for pid, ipc in old.items():
             if pid not in live:
                 ipc.close()
+        with self._lock:
+            for pid in [p for p in self._applied if p not in live]:
+                self._applied.pop(pid, None)
+            for pid in [p for p in self._retry_at if p not in live]:
+                self._retry_at.pop(pid, None)
         cache = engine_cache_info()
         now = time.monotonic()
         self._engine_growing_until = next_growth_deadline(
@@ -272,24 +342,25 @@ class Engine:
         with self._lock:
             ipcs = list(self._ipc.items())
         for pid, ipc in ipcs:
-            try:
-                if enabled:
-                    if not self._runtime.ready:
-                        self._error = "TensorRT 執行環境尚未就緒"
-                        return
-                    if self._held_off():
-                        self._error = ""
-                        continue
-                    with self._apply_lock:
-                        apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)
-                    self._mark_settling()
+            if enabled:
+                if not self._runtime.ready:
+                    self._error = "TensorRT 執行環境尚未就緒"
+                    return
+                # Invalidate first: whether the apply below is skipped (hold-off),
+                # fails, or never runs at all, tick() has to be left able to see
+                # that this mpv is out of date and finish the job later.
+                self._invalidate(pid)
+                if self._held_off():
                     self._error = ""
-                else:
-                    with self._apply_lock:
-                        remove(ipc, announce=True)
-                    self._error = ""
-            except IpcError as exc:
-                self._error = str(exc)
+                    continue
+                try:
+                    info = snapshot_playback(ipc)
+                except IpcError as exc:
+                    self._error = str(exc)
+                    continue
+                self._apply_to(pid, ipc, resolve_multi(info, self.settings), announce=True)
+            else:
+                self._remove_from(pid, ipc, announce=True)
         self.tick()
 
     def update_settings(self, **kwargs: Any) -> None:

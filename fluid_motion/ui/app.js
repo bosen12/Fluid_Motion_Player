@@ -105,31 +105,44 @@ function renderChecks(checks) {
     .join("");
 }
 
+// Chip groups are built once and then only have aria-pressed flipped.
+// Re-running innerHTML on every 900ms poll used to destroy the button under the
+// cursor mid-click: with the mousedown target detached, the browser dispatches
+// click on the container instead, closest("[data-profile]") returns null, and
+// the handler silently returns -- the user's profile change just vanished.
+function chipGroup(rootId, items, attr, extraClass) {
+  const root = $(rootId);
+  if (!root || root.dataset.built === "true") return root;
+  root.innerHTML = items
+    .map(
+      (it) =>
+        `<button type="button" class="chip${extraClass ? " " + extraClass : ""}" ${attr}="${it.id}" aria-pressed="false">${it.label}</button>`
+    )
+    .join("");
+  root.dataset.built = "true";
+  return root;
+}
+
+function markPressed(root, isActive) {
+  if (!root) return;
+  for (const btn of root.children) setPressed(btn, isActive(btn));
+}
+
 function renderProfiles(active) {
-  const root = $("profiles");
-  root.innerHTML = PROFILES.map((p) => {
-    const pressed = p.id === active;
-    return `<button type="button" class="chip" data-profile="${p.id}" aria-pressed="${pressed}">${p.label}</button>`;
-  }).join("");
+  const root = chipGroup("profiles", PROFILES, "data-profile");
+  markPressed(root, (btn) => btn.dataset.profile === String(active));
 }
 
 function renderModels(active) {
-  const root = $("models");
-  if (!root) return;
-  root.innerHTML = MODELS.map((m) => {
-    const pressed = Number(m.id) === Number(active);
-    return `<button type="button" class="chip" data-model="${m.id}" aria-pressed="${pressed}">${m.label}</button>`;
-  }).join("");
+  const root = chipGroup("models", MODELS, "data-model");
+  markPressed(root, (btn) => Number(btn.dataset.model) === Number(active));
 }
 
 function renderScenePresets(value) {
-  const root = $("scene-presets");
-  if (!root) return;
+  const items = SCENE_PRESETS.map((p) => ({ id: p.value, label: p.label }));
+  const root = chipGroup("scene-presets", items, "data-scene-preset", "chip-sm");
   const current = Number(value);
-  root.innerHTML = SCENE_PRESETS.map((p) => {
-    const pressed = Math.abs(current - p.value) < 0.005;
-    return `<button type="button" class="chip chip-sm" data-scene-preset="${p.value}" aria-pressed="${pressed}">${p.label}</button>`;
-  }).join("");
+  markPressed(root, (btn) => Math.abs(current - Number(btn.dataset.scenePreset)) < 0.005);
 }
 
 function renderCache(cache) {
@@ -249,9 +262,24 @@ function render(state) {
   }
 }
 
+// Bumped by every settings command. A get_state that was already in flight when
+// the user changed something is answered from before that change, so dropping it
+// keeps the poll from repainting stale settings over the command's own result.
+let commandEpoch = 0;
+
+async function command(name, ...args) {
+  commandEpoch += 1;
+  const state = await call(name, ...args);
+  commandEpoch += 1;
+  render(state);
+  return state;
+}
+
 async function refresh() {
+  const epoch = commandEpoch;
   try {
     const state = await call("get_state");
+    if (epoch !== commandEpoch) return;
     render(state);
   } catch (err) {
     $("toast").dataset.open = "true";
@@ -263,44 +291,44 @@ function bind() {
   $("toggle").addEventListener("click", async () => {
     const pressed = $("toggle").getAttribute("aria-pressed") === "true";
     $("toggle").setAttribute("aria-pressed", pressed ? "false" : "true");
-    const state = await call("set_enabled", !pressed);
-    render(state);
+    await command("set_enabled", !pressed);
   });
 
   $("profiles").addEventListener("click", async (event) => {
     const btn = event.target.closest("[data-profile]");
     if (!btn) return;
-    const state = await call("set_profile", btn.dataset.profile);
-    render(state);
+    renderProfiles(btn.dataset.profile);
+    await command("set_profile", btn.dataset.profile);
   });
 
   $("models").addEventListener("click", async (event) => {
     const btn = event.target.closest("[data-model]");
     if (!btn) return;
-    const state = await call("set_model", Number(btn.dataset.model));
-    render(state);
+    renderModels(Number(btn.dataset.model));
+    await command("set_model", Number(btn.dataset.model));
   });
 
   $("scene").addEventListener("input", () => {
     $("scene-val").textContent = Number($("scene").value).toFixed(2);
   });
   $("scene").addEventListener("change", async () => {
-    render(await call("set_scene", Number($("scene").value)));
+    await command("set_scene", Number($("scene").value));
   });
   $("scene-presets").addEventListener("click", async (event) => {
     const btn = event.target.closest("[data-scene-preset]");
     if (!btn) return;
     const value = Number(btn.dataset.scenePreset);
-    render(await call("set_scene", value));
+    renderScenePresets(value);
+    await command("set_scene", value);
   });
   $("streams").addEventListener("input", () => {
     $("streams-val").textContent = $("streams").value;
   });
   $("streams").addEventListener("change", async () => {
-    render(await call("set_streams", Number($("streams").value)));
+    await command("set_streams", Number($("streams").value));
   });
   $("force-accel").addEventListener("change", async () => {
-    render(await call("set_force_accel", $("force-accel").checked));
+    await command("set_force_accel", $("force-accel").checked);
   });
   $("setup").addEventListener("click", async () => {
     render(await call("start_setup"));

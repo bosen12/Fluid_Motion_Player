@@ -192,6 +192,19 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     }
 
 
+def resolve_multi(info: dict[str, Any], settings: Settings) -> int:
+    """The integer multiplier apply() will actually use for this playback state.
+
+    The watcher needs the exact same number apply() computes in order to tell
+    whether the loaded filter still matches the current settings, so both sides
+    read it from here rather than each deriving it from a slightly different
+    fps field.
+    """
+    source = parse_fps(info.get("container_fps") or info.get("fps"))
+    multi, _ = target_multi(settings.profile, source, info.get("display_fps"))
+    return int(multi)
+
+
 def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = False) -> Path:
     info = snapshot_playback(ipc)
     source = parse_fps(info.get("container_fps") or info.get("fps"))
@@ -210,7 +223,7 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = F
         force_accel=settings.force_accel,
     )
     write_vpy(script, params, source_fps=source, display_fps=display)
-    multi, _ = target_multi(settings.profile, source, display)
+    multi = resolve_multi(info, settings)
     # multi == 1 is target_multi's own sentinel for "source already at/above
     # target" — nothing to gain there. Anything above that (even 1.2x) is a
     # real ask and should be applied, not silently dropped.

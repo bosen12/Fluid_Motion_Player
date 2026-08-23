@@ -26,6 +26,11 @@ class _FakeIpc:
         self.props = dict(props)
         self.commands: list[tuple] = []
         self.vf: list = []
+        self.path = "fake-mpv-pipe"
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get(self, name: str):
         if name == "vf":
@@ -107,14 +112,29 @@ def test_apply_lock_serializes_concurrent_apply_calls():
 
 
 def test_apply_lock_guards_every_apply_and_remove_call_site():
+    import re
+
     from fluid_motion.core import watcher as watcher_mod
 
     src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
-    # tick()'s 3 branches (held-off remove, fresh apply, disabled remove) plus
-    # set_enabled()'s apply/remove -- every call site that touches mpv's vf
-    # filter must be inside the lock, or the background loop and a Bridge
-    # call can race and stomp on each other's write.
-    assert src.count("with self._apply_lock:") == 5
+    # Every call that touches mpv's vf filter must sit inside the lock, or the
+    # background loop and a Bridge call can race and stomp on each other's
+    # write. All of them funnel through _apply_to/_remove_from, so each apply(
+    # or remove( call must be on the line right after a lock acquisition.
+    lines = src.splitlines()
+    calls = [
+        (i, ln)
+        for i, ln in enumerate(lines)
+        if re.search(r"(?<![\w.])(apply|remove)\(ipc", ln)
+    ]
+    assert calls, "expected apply()/remove() call sites in watcher.py"
+    unguarded = [
+        ln.strip()
+        for i, ln in calls
+        if "with self._apply_lock:" not in lines[i - 1] and "def " not in ln
+    ]
+    # stop() removes filters during shutdown, after the loop has been stopped.
+    assert unguarded == ["remove(ipc)"], unguarded
 
 
 def test_streams_slider_max_matches_config_clamp():
@@ -192,9 +212,13 @@ def test_auto_apply_is_silent_user_toggle_announces():
     inject_src = Path(inject_mod.__file__).read_text(encoding="utf-8")
     watcher_src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
     assert "announce: bool = False" in inject_src
-    assert "apply(ipc, self.settings, Path(self.settings.mpv_root), announce=True)" in watcher_src
-    assert "remove(ipc, announce=True)" in watcher_src
+    # Only the two user-driven set_enabled() paths announce; the background
+    # tick's reconciling apply must stay silent or mpv shows an OSD toast
+    # every time it quietly catches up on a change.
+    assert "resolve_multi(info, self.settings), announce=True)" in watcher_src
+    assert "self._remove_from(pid, ipc, announce=True)" in watcher_src
     assert watcher_src.count("announce=True") == 2
+    assert "self._apply_to(player.pid, ipc, want_multi)" in watcher_src
 
 
 def test_vf_arg_uses_label():
@@ -439,3 +463,247 @@ def test_force_accel_override_wired_in_ui():
     js = (ui_dir() / "app.js").read_text(encoding="utf-8")
     assert 'id="force-accel"' in html
     assert "set_force_accel" in js
+
+
+def _tick_engine(monkeypatch, settings, ipc, pid=4321):
+    """An Engine wired to exactly one fake mpv, with tick() safe to call."""
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_detect import PlayerProcess
+
+    engine = watcher_mod.Engine(settings)
+    monkeypatch.setattr(
+        watcher_mod, "iter_mpv_processes", lambda: [PlayerProcess(pid=pid, name="mpv.exe")]
+    )
+    monkeypatch.setattr(watcher_mod, "connect_pid", lambda p, extra=None: ipc)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
+    engine._runtime.ready = True
+    return engine
+
+
+def _applied_profiles(monkeypatch, engine):
+    """Record the profile each apply() actually wrote, without touching mpv."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    seen: list[str] = []
+
+    def fake_apply(ipc, settings, mpv_root, *, announce=False):
+        seen.append(settings.profile)
+        ipc.command("vf", "add", "@fluid:vapoursynth")
+        return Path(mpv_root) / "shaders" / "fluid_rife.vpy"
+
+    monkeypatch.setattr(watcher_mod, "apply", fake_apply)
+    return seen
+
+
+def test_settings_change_skipped_by_seek_hold_is_reapplied_by_the_next_tick(monkeypatch, tmp_path):
+    """A profile change during a seek hold must survive the hold.
+
+    set_enabled() `continue`s past apply() while settings.profile has already
+    moved on, so the change reaches the config file but never reaches mpv. It
+    is the applied-settings snapshot -- not player.interpolation -- that has to
+    carry the "still owed an apply" state across the hold.
+    """
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    seen = _applied_profiles(monkeypatch, engine)
+
+    engine.tick()
+    assert seen == ["2x"]
+
+    # The user picks 120 while the post-seek hold is still active.
+    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: True)
+    engine.update_settings(profile="120")
+    assert seen == ["2x"], "an apply during the hold-off is skipped, by design"
+
+    # The hold expires. The old filter is still loaded, so the pre-fix tick()
+    # saw interpolation=True and did nothing at all -- forever.
+    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: False)
+    engine.tick()
+    assert seen == ["2x", "120"], "the skipped change must be picked back up"
+
+
+def test_new_file_with_a_different_source_fps_reapplies_the_right_multiplier(monkeypatch, tmp_path):
+    """The case that stayed broken forever: filter loaded, settings underneath stale.
+
+    mpv keeps the vf across file loads, so player.interpolation stays True when
+    the next file starts -- but the multiplier baked into the .vpy was computed
+    for the previous file's fps. Keying only off "is a filter loaded" meant the
+    new file kept playing through the old file's multiplier with nothing left
+    to notice, which is the same shape of desync a skipped apply leaves behind.
+    """
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    seen = _applied_profiles(monkeypatch, engine)
+
+    engine.tick()
+    assert seen == ["120"]
+    assert engine._applied[4321][-1] == 5, "120 / 23.976 -> 5x"
+
+    # Next file in the playlist is 59.94, and the fluid vf is still loaded.
+    ipc.props["container-fps"] = 59.94
+    ipc.props["estimated-vfps"] = 59.94
+    assert ipc.vf, "mpv keeps the filter across the file change"
+
+    engine.tick()
+    assert seen == ["120", "120"], "the multiplier is stale and must be rebuilt"
+    assert engine._applied[4321][-1] == 2, "120 / 59.94 -> 2x"
+
+
+def test_settled_settings_are_not_reapplied_every_tick(monkeypatch, tmp_path):
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    seen = _applied_profiles(monkeypatch, engine)
+
+    for _ in range(5):
+        engine.tick()
+    assert seen == ["120"], "a filter that already matches must be left alone"
+
+
+def test_no_op_multiplier_does_not_reapply_forever(monkeypatch, tmp_path):
+    """multi <= 1 is a legitimately applied no-op, not a missing filter.
+
+    apply() removes the filter when there is nothing to interpolate, which
+    leaves player.interpolation False -- the old `if not player.interpolation`
+    test read that as "needs applying" and looped apply/remove every 0.3s.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    ipc = _FakeIpc({"container-fps": 120, "estimated-vfps": 120})
+    settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        watcher_mod,
+        "apply",
+        lambda ipc_, s_, root_, announce=False: calls.append(s_.profile),
+    )
+
+    for _ in range(5):
+        engine.tick()
+    assert len(calls) == 1, f"source already at 120 -- applied once, then left alone: {calls}"
+
+
+def test_rapid_setting_changes_converge_on_the_last_one(monkeypatch, tmp_path):
+    """Clicking through several profiles quickly must end on the last click."""
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    seen = _applied_profiles(monkeypatch, engine)
+
+    # Every one of these fails at the IPC layer except the last.
+    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: True)
+    for profile in ("3x", "60", "144"):
+        engine.update_settings(profile=profile)
+    assert seen == [], "all four applies were skipped"
+
+    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: False)
+    engine.tick()
+    assert seen == ["144"], "the last selection wins, and it is actually applied"
+    assert engine.settings.profile == "144"
+
+
+def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
+    """An IpcError set self._error and was then forgotten by everyone."""
+    import time as time_mod
+
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+
+    attempts: list[int] = []
+
+    def failing(ipc_, s_, root_, announce=False):
+        attempts.append(1)
+        raise IpcError("mpv said no")
+
+    monkeypatch.setattr(watcher_mod, "apply", failing)
+    engine.tick()
+
+    assert attempts == [1]
+    assert engine._error == "mpv said no"
+    assert 4321 not in engine._applied, "a failed apply must not look settled"
+
+    # Backed off: the 0.3s loop must not hammer an mpv that is refusing commands.
+    engine.tick()
+    assert attempts == [1], "retry is throttled, not immediate"
+
+    # Once the backoff expires it does retry -- and succeeds.
+    engine._retry_at[4321] = time_mod.monotonic() - 1
+    seen = _applied_profiles(monkeypatch, engine)
+    engine.tick()
+    assert seen == ["120"]
+    assert engine._error == ""
+
+
+def test_filter_key_changes_with_every_setting_that_rewrites_the_vpy():
+    from fluid_motion.core.watcher import Engine
+
+    engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1))
+    base = engine._filter_key(2)
+    for field, value in (
+        ("profile", "3x"),
+        ("rife_model", 425),
+        ("scene_threshold", 0.25),
+        ("trt_streams", 4),
+        ("fp16", False),
+        ("cuda_graph", True),
+        ("force_accel", True),
+    ):
+        engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1))
+        setattr(engine.settings, field, value)
+        assert engine._filter_key(2) != base, f"{field} must invalidate the applied snapshot"
+    # A new file with a different source fps resolves to a different multi.
+    engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1))
+    assert engine._filter_key(3) != base
+
+
+def test_tick_reapplies_on_stale_settings_not_only_on_a_missing_filter():
+    from fluid_motion.core import watcher as watcher_mod
+
+    src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
+    # The bug: `if not player.interpolation: apply(...)` -- a filter that is
+    # loaded but built from superseded settings looked healthy forever.
+    assert "stale = applied != self._filter_key(want_multi)" in src
+    assert "missing = want_multi > 1 and not player.interpolation" in src
+    assert "if (stale or missing)" in src
+
+
+def test_chip_groups_are_not_rebuilt_on_every_poll():
+    """The poll used to destroy the chip under the cursor mid-click.
+
+    render() runs every 900ms. Replacing #profiles.innerHTML between mousedown
+    and mouseup detaches the button, so the browser dispatches click on the
+    container, closest("[data-profile]") returns null, and the profile change
+    is silently dropped -- which is exactly how mpv ended up running a filter
+    that did not match the UI.
+    """
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    for group in ("PROFILES.map", "MODELS.map", "SCENE_PRESETS.map"):
+        assert f"innerHTML = {group}" not in js, f"{group} must not be re-rendered into innerHTML"
+    assert 'root.dataset.built === "true"' in js, "chip groups must be built once"
+    assert "function markPressed" in js, "state changes must only flip aria-pressed"
+
+
+def test_in_flight_poll_cannot_repaint_stale_settings_over_a_command():
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "let commandEpoch = 0;" in js
+    assert "if (epoch !== commandEpoch) return;" in js
+    # Every settings mutation goes through command(), which bumps the epoch.
+    for name in ("set_profile", "set_model", "set_scene", "set_streams", "set_force_accel", "set_enabled"):
+        assert f'command("{name}"' in js, f"{name} must go through command()"
+
+
+def test_build_bat_does_not_report_success_after_a_failed_build():
+    bat = Path("build.bat").read_text(encoding="utf-8")
+    built = bat.index("echo Built:")
+    guard = bat.index("if not exist dist\\FluidMotion.exe goto :failed")
+    assert guard < built, "the success message must be gated on the exe existing"
+    assert "BUILD FAILED" in bat
+    assert "exit /b 1" in bat
