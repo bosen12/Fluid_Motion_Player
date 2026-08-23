@@ -12,6 +12,10 @@ RIFE_46 = 46
 RIFE_425 = 425
 RIFE_426 = 426
 MODULUS = 32  # 4.6 / 4.25; 4.26 needs 64 (impl 2 pads internally)
+# Past this RIFE cannot keep up in real time anyway, and every distinct multi
+# compiles and caches its own TensorRT engine. Without a cap, a 12fps clip on
+# the 144 profile asks for 12x and a 240Hz panel on "display" asks for 10x.
+MAX_MULTI = 8
 
 
 def rife_onnx_name(model: int) -> str:
@@ -99,7 +103,7 @@ def target_multi(profile: str, source_fps: Fraction | None, display_fps: float |
     snapped = round(float(target) / float(src))
     if snapped <= 1:
         return 1, False
-    return snapped, False
+    return min(snapped, MAX_MULTI), False
 
 
 def _py_multi(multi: int | Fraction) -> str:

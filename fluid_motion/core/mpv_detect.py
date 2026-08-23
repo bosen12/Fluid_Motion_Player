@@ -83,14 +83,21 @@ def iter_mpv_processes() -> list[PlayerProcess]:
     found: list[PlayerProcess] = []
     if psutil is None:
         return found
-    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+    # pid+name only: process_iter fetches every requested field for *every*
+    # process on the box, and on Windows exe/cmdline each cost a handle open
+    # plus a PEB read -- ~20ms for 600 processes, 3.3 times a second, forever.
+    # Both are only ever needed for the handful that are actually mpv.
+    for proc in psutil.process_iter(["pid", "name"]):
         try:
             name = (proc.info.get("name") or "").lower()
             if name not in PLAYER_NAMES:
                 continue
             if _is_helper_mpv(proc):
                 continue
-            exe = proc.info.get("exe") or ""
+            try:
+                exe = proc.exe() or ""
+            except (psutil.Error, OSError):
+                exe = ""
             found.append(PlayerProcess(pid=int(proc.info["pid"]), name=name, exe=exe))
         except (psutil.Error, TypeError, ValueError):
             continue

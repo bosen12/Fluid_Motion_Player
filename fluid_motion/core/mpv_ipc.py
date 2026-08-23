@@ -26,6 +26,11 @@ class MpvIpc:
         self.kind = kind
         self.path = path
         self._req = 1
+        # mpv pushes unsolicited events down the same connection, so a read very
+        # often ends mid-line. Carrying the tail over means the next command
+        # reassembles it instead of throwing the fragment away and then failing
+        # to parse the fused line that follows.
+        self._buf = b""
 
     def close(self) -> None:
         handle = self._handle
@@ -46,15 +51,14 @@ class MpvIpc:
         raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         self._write(raw)
         deadline = time.time() + timeout
-        buf = b""
-        while time.time() < deadline:
-            chunk = self._read(4096)
-            if not chunk:
-                time.sleep(0.02)
-                continue
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
+        # Backs off from 0.5ms so a prompt mpv still answers in well under a
+        # millisecond -- snapshot_playback() issues a dozen of these per tick.
+        idle = 0.0005
+        while True:
+            # Drain first: the reply may already be sitting in the carried-over
+            # buffer, in which case there is nothing left to read for it.
+            while b"\n" in self._buf:
+                line, self._buf = self._buf.split(b"\n", 1)
                 line = line.strip()
                 if not line:
                     continue
@@ -66,7 +70,15 @@ class MpvIpc:
                     if msg.get("error") not in (None, "success"):
                         raise IpcError(str(msg.get("error")))
                     return msg.get("data")
-        raise IpcError("mpv IPC timed out")
+            if time.time() >= deadline:
+                raise IpcError("mpv IPC timed out")
+            chunk = self._read(4096)
+            if not chunk:
+                time.sleep(idle)
+                idle = min(idle * 2, 0.01)
+                continue
+            idle = 0.0005
+            self._buf += chunk
 
     def get(self, name: str) -> Any:
         return self.command("get_property", name)
@@ -94,9 +106,22 @@ class MpvIpc:
         if self.kind == "pipe":
             import pywintypes
             import win32file
+            import win32pipe
 
+            # The handle is synchronous (no FILE_FLAG_OVERLAPPED), so ReadFile
+            # blocks until bytes arrive -- which made command()'s deadline
+            # unenforceable: an mpv that stopped servicing its IPC (busy
+            # compiling a TensorRT engine, wedged vo) parked the caller here
+            # forever while holding the apply lock. Peek first and let the
+            # caller's deadline do its job.
             try:
-                _, data = win32file.ReadFile(self._handle, n)
+                _, avail, _ = win32pipe.PeekNamedPipe(self._handle, 0)
+            except pywintypes.error:
+                return b""
+            if not avail:
+                return b""
+            try:
+                _, data = win32file.ReadFile(self._handle, min(n, avail))
                 return data or b""
             except pywintypes.error:
                 return b""

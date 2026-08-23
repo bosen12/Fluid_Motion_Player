@@ -112,29 +112,84 @@ def test_apply_lock_serializes_concurrent_apply_calls():
 
 
 def test_apply_lock_guards_every_apply_and_remove_call_site():
-    import re
+    import ast
 
     from fluid_motion.core import watcher as watcher_mod
 
     src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
-    # Every call that touches mpv's vf filter must sit inside the lock, or the
-    # background loop and a Bridge call can race and stomp on each other's
-    # write. All of them funnel through _apply_to/_remove_from, so each apply(
-    # or remove( call must be on the line right after a lock acquisition.
-    lines = src.splitlines()
-    calls = [
-        (i, ln)
-        for i, ln in enumerate(lines)
-        if re.search(r"(?<![\w.])(apply|remove)\(ipc", ln)
-    ]
-    assert calls, "expected apply()/remove() call sites in watcher.py"
-    unguarded = [
-        ln.strip()
-        for i, ln in calls
-        if "with self._apply_lock:" not in lines[i - 1] and "def " not in ln
-    ]
-    # stop() removes filters during shutdown, after the loop has been stopped.
-    assert unguarded == ["remove(ipc)"], unguarded
+    tree = ast.parse(src)
+    engine = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Engine")
+
+    # Every call that touches mpv's vf graph must funnel through the two
+    # lock-guarded helpers, or the background loop and a Bridge call can race
+    # and stomp on each other's vf remove+add / .vpy write.
+    callers = {}
+    for node in engine.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                continue
+            if call.func.id in {"apply", "remove"}:
+                callers.setdefault(node.name, set()).add(call.func.id)
+
+    assert callers == {"_apply_to": {"apply"}, "_remove_from": {"remove"}}, callers
+
+    for name in ("_apply_to", "_remove_from"):
+        body = ast.get_source_segment(src, next(n for n in engine.body if getattr(n, "name", None) == name))
+        assert "self._apply_lock.acquire(" in body, f"{name} must take the apply lock"
+        assert "self._apply_lock.release()" in body, f"{name} must always release it"
+
+
+def test_apply_lock_is_released_even_when_mpv_refuses(tmp_path, monkeypatch):
+    """A raising apply() must not strand the lock -- everything else would wedge."""
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path)))
+
+    def boom(*args, **kwargs):
+        raise IpcError("nope")
+
+    monkeypatch.setattr(watcher_mod, "apply", boom)
+    monkeypatch.setattr(watcher_mod, "remove", boom)
+    assert engine._apply_to(1, _FakeIpc({}), 2) is False
+    assert engine._remove_from(1, _FakeIpc({})) is False
+    assert engine._apply_lock.acquire(timeout=0), "the lock was left held"
+    engine._apply_lock.release()
+
+
+def test_ui_thread_settings_change_does_not_block_on_a_slow_apply(tmp_path, monkeypatch):
+    """set_enabled() runs on the pywebview bridge thread.
+
+    Waiting out a multi-second apply() there freezes the window, so it hands the
+    work to tick() instead -- which is only safe because the applied-settings
+    snapshot guarantees tick will actually pick it up.
+    """
+    import threading
+    import time as time_mod
+
+    from fluid_motion.core import watcher as watcher_mod
+
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    with engine._lock:
+        engine._ipc = {4321: ipc}
+
+    # The background tick is mid-apply and holds the lock.
+    engine._apply_lock.acquire()
+    try:
+        started = time_mod.monotonic()
+        done = threading.Event()
+        threading.Thread(target=lambda: (engine.set_enabled(True), done.set()), daemon=True).start()
+        assert done.wait(timeout=5), "set_enabled() never returned"
+        elapsed = time_mod.monotonic() - started
+    finally:
+        engine._apply_lock.release()
+
+    assert elapsed < watcher_mod.UI_APPLY_WAIT + 1.5, f"UI thread blocked for {elapsed:.1f}s"
+    assert 4321 not in engine._applied, "the deferred change must stay pending for tick()"
 
 
 def test_streams_slider_max_matches_config_clamp():
@@ -215,10 +270,11 @@ def test_auto_apply_is_silent_user_toggle_announces():
     # Only the two user-driven set_enabled() paths announce; the background
     # tick's reconciling apply must stay silent or mpv shows an OSD toast
     # every time it quietly catches up on a change.
-    assert "resolve_multi(info, self.settings), announce=True)" in watcher_src
-    assert "self._remove_from(pid, ipc, announce=True)" in watcher_src
-    assert watcher_src.count("announce=True") == 2
-    assert "self._apply_to(player.pid, ipc, want_multi)" in watcher_src
+    assert "announce=True" in watcher_src
+    assert watcher_src.count("announce=True") == 2, "only the two set_enabled paths announce"
+    # The background tick's reconciling apply must stay silent, or mpv shows an
+    # OSD toast every time it quietly catches up on a change.
+    assert "self._apply_to(player.pid, ipc, want_multi, wait=apply_wait)" in watcher_src
 
 
 def test_vf_arg_uses_label():
@@ -707,3 +763,187 @@ def test_build_bat_does_not_report_success_after_a_failed_build():
     assert guard < built, "the success message must be gated on the exe existing"
     assert "BUILD FAILED" in bat
     assert "exit /b 1" in bat
+
+
+def test_named_pipe_reads_peek_before_blocking():
+    """ReadFile on a synchronous pipe blocks until bytes arrive.
+
+    That made command()'s deadline decorative on Windows -- and named pipes are
+    the only transport actually used there. An mpv that stopped servicing its
+    IPC (compiling a TensorRT engine, wedged vo) parked the caller in ReadFile
+    forever, holding the apply lock and freezing the UI behind it.
+    """
+    from fluid_motion.core import mpv_ipc as ipc_mod
+
+    src = Path(ipc_mod.__file__).read_text(encoding="utf-8")
+    read_body = src[src.index("def _read(self"):]
+    peek = read_body.index("PeekNamedPipe")
+    readfile = read_body.index("win32file.ReadFile")
+    assert peek < readfile, "must peek for available bytes before calling ReadFile"
+    assert "if not avail:" in read_body, "no bytes available must return instead of blocking"
+
+
+def test_command_gives_up_at_the_deadline():
+    from fluid_motion.core.mpv_ipc import IpcError, MpvIpc
+    import time as time_mod
+
+    ipc = MpvIpc(handle=object(), kind="unix", path="x")
+    ipc._write = lambda data: None
+    ipc._read = lambda n: b""  # mpv never answers
+
+    started = time_mod.monotonic()
+    try:
+        ipc.command("get_property", "pause", timeout=0.3)
+    except IpcError as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("a silent mpv must raise, not hang")
+    elapsed = time_mod.monotonic() - started
+    assert 0.25 < elapsed < 1.5, f"deadline not honoured: {elapsed:.2f}s"
+
+
+def test_no_bytes_are_discarded_between_commands():
+    """command() used to keep its read buffer in a local.
+
+    Anything read past the matching reply -- mpv pushes events down the same
+    connection continuously -- was thrown away on return, so the next command
+    started mid-line. The stream does resynchronise (the fragment fails to
+    parse and is skipped), so this is robustness rather than a live bug, but
+    carrying the tail over costs one attribute and removes the whole class.
+    """
+    from fluid_motion.core.mpv_ipc import MpvIpc
+
+    ipc = MpvIpc(handle=object(), kind="unix", path="x")
+    ipc._write = lambda data: None
+    chunks = [b'{"data":"a","request_id":1}\n{"data":"b","request_id":2}\n']
+    ipc._read = lambda n: chunks.pop(0) if chunks else b""
+
+    assert ipc.command("get_property", "x", timeout=1.0) == "a"
+    # Already buffered from the first read; a local buffer would have dropped it
+    # and this would sit until the deadline.
+    assert ipc.command("get_property", "y", timeout=1.0) == "b"
+
+
+def test_stale_reply_from_a_timed_out_command_is_not_mistaken_for_the_next_one():
+    from fluid_motion.core.mpv_ipc import MpvIpc
+
+    ipc = MpvIpc(handle=object(), kind="unix", path="x")
+    ipc._write = lambda data: None
+    ipc._req = 7
+    # The late answer to request 6 is sitting in the pipe ahead of request 7's.
+    chunks = [b'{"data":"stale","request_id":6}\n{"data":"fresh","request_id":7}\n']
+    ipc._read = lambda n: chunks.pop(0) if chunks else b""
+    assert ipc.command("get_property", "x", timeout=1.0) == "fresh"
+
+
+def test_multiplier_is_capped():
+    from fractions import Fraction
+
+    from fluid_motion.core.vs_script import MAX_MULTI, target_multi
+
+    # Every distinct multi compiles its own TensorRT engine, and RIFE cannot
+    # keep up this far past real time anyway.
+    assert target_multi("144", Fraction(12), None) == (MAX_MULTI, False)
+    assert target_multi("display", Fraction(24000, 1001), 240.0) == (MAX_MULTI, False)
+    # Ordinary targets are untouched.
+    assert target_multi("144", Fraction(24000, 1001), None) == (6, False)
+    assert target_multi("120", Fraction(24000, 1001), None) == (5, False)
+
+
+def test_apply_fails_loudly_when_the_filter_does_not_land(tmp_path, monkeypatch):
+    """apply() used to accept any vapoursynth filter mentioning rife/fluid.
+
+    A leftover from SVP or an older build answered yes, so a vf add that never
+    took effect was reported as success -- and the applied-settings snapshot
+    would then record a filter that is not actually running.
+    """
+    from fluid_motion.core.inject import apply
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    class SilentlyIgnoresAdd(_FakeIpc):
+        def command(self, *args, **kwargs):
+            self.commands.append(args)  # accepts "vf add" but never loads it
+
+    ipc = SilentlyIgnoresAdd({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(profile="120", mpv_root=str(tmp_path))
+    try:
+        apply(ipc, settings, tmp_path)
+    except IpcError as exc:
+        assert "沒有掛上" in str(exc)
+    else:
+        raise AssertionError("apply() must not report success when nothing loaded")
+
+
+def test_apply_does_not_accept_someone_elses_vapoursynth_filter(tmp_path, monkeypatch):
+    from fluid_motion.core.inject import fluid_filter_loaded
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    ipc = _FakeIpc({})
+    ipc.vf = [{"name": "vapoursynth", "label": "svp_rife"}]
+    assert not fluid_filter_loaded(ipc), "another tool's rife filter is not ours"
+    ipc.vf = [{"name": "vapoursynth", "label": "fluid"}]
+    assert fluid_filter_loaded(ipc)
+
+
+def test_process_scan_does_not_fetch_exe_and_cmdline_for_every_process():
+    """~20ms per call across 600 processes, 3.3 times a second, forever.
+
+    process_iter materialises the requested fields for every process on the
+    box, and on Windows exe/cmdline each cost a handle open plus a PEB read.
+    Only processes already matched by name need them.
+    """
+    from fluid_motion.core import mpv_detect
+
+    src = Path(mpv_detect.__file__).read_text(encoding="utf-8")
+    body = src[src.index("def iter_mpv_processes"):]
+    start = body.index("psutil.process_iter(")
+    scan = body[start:body.index(")", start) + 1]
+    assert "exe" not in scan and "cmdline" not in scan, f"still eagerly fetched: {scan}"
+
+
+def test_settings_change_writes_the_config_once(tmp_path, monkeypatch):
+    import fluid_motion.core.watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(enabled=True, mpv_root=str(tmp_path)))
+    writes = []
+    monkeypatch.setattr(watcher_mod, "save_settings", lambda s: writes.append(s.profile))
+    monkeypatch.setattr(engine, "tick", lambda **kw: None)
+    engine.update_settings(profile="120")
+    assert writes == ["120"], f"config.json written {len(writes)}x for one change"
+
+
+def test_hotkey_dispatch_does_not_re_enter_itself(tmp_path, monkeypatch):
+    """set_enabled() ends with tick(), which calls back into _consume_hotkey."""
+    import fluid_motion.core.watcher as watcher_mod
+
+    hotkey = tmp_path / "hotkey"
+    hotkey.write_text("toggle", encoding="utf-8")
+    monkeypatch.setattr(watcher_mod, "hotkey_path", lambda: hotkey)
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path)))
+    depth = {"now": 0, "max": 0}
+    real = engine._consume_hotkey
+
+    def counting():
+        depth["now"] += 1
+        depth["max"] = max(depth["max"], depth["now"])
+        try:
+            real()
+        finally:
+            depth["now"] -= 1
+
+    def set_enabled(enabled):
+        # Stands in for set_enabled()'s trailing tick(), and races a fresh
+        # hotkey landing in the same window.
+        hotkey.write_text("toggle", encoding="utf-8")
+        engine._consume_hotkey()
+
+    monkeypatch.setattr(engine, "_consume_hotkey", counting)
+    monkeypatch.setattr(engine, "set_enabled", set_enabled)
+    try:
+        engine._consume_hotkey()
+    except RecursionError:
+        raise AssertionError("hotkey dispatch recursed without bound") from None
+    assert depth["max"] <= 2, f"hotkey dispatch nested {depth['max']} deep"

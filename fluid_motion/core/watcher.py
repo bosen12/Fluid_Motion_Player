@@ -33,6 +33,9 @@ ENGINE_GROWTH_GRACE = 3.0
 # A failed apply() is retried by the next tick, but not at the 0.3s tick rate:
 # an mpv that is refusing vf commands would otherwise be hammered forever.
 APPLY_RETRY_BACKOFF = 2.0
+# How long a UI-thread settings change waits for the background tick to finish
+# an apply before handing the work off to the next tick instead of blocking.
+UI_APPLY_WAIT = 0.5
 
 
 class Engine:
@@ -65,6 +68,7 @@ class Engine:
         # is what makes the next tick pick the change back up.
         self._applied: dict[int, tuple] = {}
         self._retry_at: dict[int, float] = {}
+        self._in_hotkey = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
@@ -103,13 +107,11 @@ class Engine:
         except OSError:
             pass
         with self._lock:
-            ipcs = list(self._ipc.values())
+            ipcs = list(self._ipc.items())
             self._ipc.clear()
-        for ipc in ipcs:
-            try:
-                remove(ipc)
-            except IpcError:
-                pass
+        for pid, ipc in ipcs:
+            # Bounded wait: shutdown must not hang behind an in-flight apply.
+            self._remove_from(pid, ipc, wait=2.0)
             ipc.close()
 
     def _write_heartbeat(self) -> None:
@@ -155,18 +157,31 @@ class Engine:
         with self._lock:
             self._applied.pop(pid, None)
 
-    def _apply_to(self, pid: int, ipc: MpvIpc, multi: int, *, announce: bool = False) -> bool:
-        """Apply the current settings and record them. False if mpv refused."""
+    def _apply_to(
+        self, pid: int, ipc: MpvIpc, multi: int, *, announce: bool = False, wait: float = -1
+    ) -> bool:
+        """Apply the current settings to one mpv and record what was applied.
+
+        False means mpv did not get them -- it refused (IpcError, retried after
+        a backoff), or another thread is mid-apply and this caller chose not to
+        queue behind it. Either way the pid is left invalidated, so tick()
+        reconciles it. wait=-1 blocks; a UI-thread caller passes a short wait so
+        a slow apply cannot freeze the window.
+        """
         key = self._filter_key(multi)
+        if not self._apply_lock.acquire(timeout=wait):
+            self._invalidate(pid)
+            return False
         try:
-            with self._apply_lock:
-                apply(ipc, self.settings, Path(self.settings.mpv_root), announce=announce)
+            apply(ipc, self.settings, Path(self.settings.mpv_root), announce=announce)
         except IpcError as exc:
             self._error = str(exc)
             with self._lock:
                 self._applied.pop(pid, None)
                 self._retry_at[pid] = time.monotonic() + APPLY_RETRY_BACKOFF
             return False
+        finally:
+            self._apply_lock.release()
         with self._lock:
             self._applied[pid] = key
             self._retry_at.pop(pid, None)
@@ -174,18 +189,28 @@ class Engine:
         self._error = ""
         return True
 
-    def _remove_from(self, pid: int, ipc: MpvIpc, *, announce: bool = False) -> bool:
+    def _remove_from(self, pid: int, ipc: MpvIpc, *, announce: bool = False, wait: float = -1) -> bool:
+        if not self._apply_lock.acquire(timeout=wait):
+            self._invalidate(pid)
+            return False
         try:
-            with self._apply_lock:
-                remove(ipc, announce=announce)
+            remove(ipc, announce=announce)
         except IpcError as exc:
             self._error = str(exc)
             return False
+        finally:
+            self._apply_lock.release()
         self._invalidate(pid)
         self._error = ""
         return True
 
     def _consume_hotkey(self) -> None:
+        # set_enabled() ends with tick(), which calls back in here. The hotkey
+        # file is unlinked before dispatch so that terminates, but a hotkey
+        # landing inside that window would nest another level; guard instead of
+        # relying on the timing.
+        if self._in_hotkey:
+            return
         path = hotkey_path()
         if not path.is_file():
             return
@@ -194,19 +219,23 @@ class Engine:
             path.unlink(missing_ok=True)
         except OSError:
             return
-        if text in {"toggle", "on", "off"}:
-            if text == "on":
-                want = True
-            elif text == "off":
-                want = False
-            else:
-                want = not self.settings.enabled
-            self.set_enabled(want)
-        elif text == "show" and self._on_show:
-            try:
-                self._on_show()
-            except Exception:
-                pass
+        self._in_hotkey = True
+        try:
+            if text in {"toggle", "on", "off"}:
+                if text == "on":
+                    want = True
+                elif text == "off":
+                    want = False
+                else:
+                    want = not self.settings.enabled
+                self.set_enabled(want)
+            elif text == "show" and self._on_show:
+                try:
+                    self._on_show()
+                except Exception:
+                    pass
+        finally:
+            self._in_hotkey = False
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.wait(1.0):
@@ -224,7 +253,14 @@ class Engine:
                 except Exception:
                     pass
 
-    def tick(self) -> None:
+    def tick(self, *, apply_wait: float = -1) -> None:
+        """apply_wait is how long to queue behind an in-flight apply.
+
+        The background loop blocks (-1) because it *is* the worker. A tick
+        driven from the pywebview bridge thread passes a short wait so a slow
+        apply cannot freeze the window; whatever it skips stays invalidated and
+        the next background tick finishes it.
+        """
         self._write_heartbeat()
         self._consume_hotkey()
         players = iter_mpv_processes()
@@ -299,7 +335,7 @@ class Engine:
                 # state: forget the snapshot so the settings are re-applied once
                 # the seek quiets down, even if nothing else changes afterwards.
                 if player.interpolation:
-                    if self._remove_from(player.pid, ipc):
+                    if self._remove_from(player.pid, ipc, wait=apply_wait):
                         player.interpolation = False
                 else:
                     self._invalidate(player.pid)
@@ -310,10 +346,10 @@ class Engine:
                 stale = applied != self._filter_key(want_multi)
                 missing = want_multi > 1 and not player.interpolation
                 if (stale or missing) and time.monotonic() >= retry_at:
-                    if self._apply_to(player.pid, ipc, want_multi):
+                    if self._apply_to(player.pid, ipc, want_multi, wait=apply_wait):
                         player.interpolation = want_multi > 1
             elif player.interpolation or applied is not None:
-                if self._remove_from(player.pid, ipc):
+                if self._remove_from(player.pid, ipc, wait=apply_wait):
                     player.interpolation = False
         for pid, ipc in old.items():
             if pid not in live:
@@ -358,18 +394,24 @@ class Engine:
                 except IpcError as exc:
                     self._error = str(exc)
                     continue
-                self._apply_to(pid, ipc, resolve_multi(info, self.settings), announce=True)
+                # Short wait: set_enabled() runs on the pywebview bridge thread,
+                # so blocking here for a multi-second apply freezes the window.
+                # Handing off to tick() costs at most one 0.3s tick.
+                self._apply_to(
+                    pid, ipc, resolve_multi(info, self.settings), announce=True, wait=UI_APPLY_WAIT
+                )
             else:
-                self._remove_from(pid, ipc, announce=True)
-        self.tick()
+                self._remove_from(pid, ipc, announce=True, wait=UI_APPLY_WAIT)
+        self.tick(apply_wait=UI_APPLY_WAIT)
 
     def update_settings(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
             if hasattr(self.settings, key):
                 setattr(self.settings, key, value)
-        save_settings(self.settings)
         if self.settings.enabled:
-            self.set_enabled(True)
+            self.set_enabled(True)  # saves; no need to write the file twice
+        else:
+            save_settings(self.settings)
 
     def state(self) -> dict[str, Any]:
         with self._lock:

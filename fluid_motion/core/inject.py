@@ -65,6 +65,24 @@ def interpolation_active(ipc: MpvIpc) -> bool:
         return False
 
 
+def fluid_filter_loaded(ipc: MpvIpc) -> bool:
+    """True only when *our* labelled filter is on the graph.
+
+    interpolation_active() accepts any vapoursynth filter whose description
+    merely mentions rife/fluid. That is the right question for "is there
+    something here to tear down", but too loose for confirming an apply()
+    landed: a leftover from SVP or an older build answers yes, and apply()
+    would then report success while mpv runs somebody else's filter.
+    """
+    try:
+        vf = ipc.get("vf")
+    except IpcError:
+        return False
+    if isinstance(vf, list):
+        return any(isinstance(item, dict) and item.get("label") == "fluid" for item in vf)
+    return FILTER_LABEL in str(vf or "")
+
+
 SHORTFALL_RATIO = 0.12
 SEEK_HOLD_MAX_AGE = 2.0
 SETTLE_SECONDS = 5.0
@@ -240,9 +258,13 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = F
     try:
         ipc.command("vf", "add", _vf_arg(script), timeout=30)
     except IpcError as exc:
-        if interpolation_active(ipc):
+        # The reply can time out while mpv is still building the pipeline, so a
+        # labelled filter that is genuinely on the graph still counts as applied.
+        if fluid_filter_loaded(ipc):
             return script
         raise IpcError(f"無法加入補幀濾鏡：{exc}") from exc
+    if not fluid_filter_loaded(ipc):
+        raise IpcError("補幀濾鏡已送出，但沒有掛上 mpv 的 vf")
     try:
         ipc.set("interpolation", False)
         ipc.set("video-sync", "display-resample")
