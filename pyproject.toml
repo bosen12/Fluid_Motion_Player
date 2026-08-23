@@ -1,0 +1,34 @@
+[project]
+name = "fluid-motion"
+version = "1.0.0"
+description = "Realtime RIFE 4.6 TensorRT frame interpolation manager for mpv"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "bosen12" }]
+keywords = ["mpv", "rife", "tensorrt", "vapoursynth", "interpolation"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft Windows",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Multimedia :: Video",
+]
+dependencies = [
+  "pywebview>=5.1",
+  "pystray>=0.19.5",
+  "pillow>=10.0",
+  "psutil>=5.9",
+  "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.urls]
+Homepage = "https://github.com/bosen12/Fluid_Motion_Player"
+Issues = "https://github.com/bosen12/Fluid_Motion_Player/issues"
+Source = "https://github.com/bosen12/Fluid_Motion_Player"
+
+[project.scripts]
+fluid-motion = "fluid_motion.app:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

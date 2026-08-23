@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#16110C" />
+    <title>Fluid Motion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@500;600&family=Geist:wght@400;500;600;700&family=Tomorrow:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="sr-only" href="#main">跳到內容</a>
+    <div class="app">
+      <header class="titlebar">
+        <div class="pywebview-drag-region drag-region" title="拖曳視窗">
+          <span class="grip" aria-hidden="true"></span>
+          <div class="brand">
+            <span class="wordmark" translate="no">Fluid Motion</span>
+            <span class="brand-sub">RIFE 4.6 · TensorRT</span>
+          </div>
+          <div class="meta">
+            <span class="live" id="live" data-on="false"><span class="live-dot" aria-hidden="true"></span><span id="live-text">等待 mpv</span></span>
+            <span id="gpu-name">GPU</span>
+          </div>
+        </div>
+        <div class="window-btns">
+          <button type="button" class="win" id="btn-min" aria-label="縮小到系統匣">–</button>
+          <button type="button" class="win" id="btn-hide" aria-label="隱藏視窗">□</button>
+          <button type="button" class="win" id="btn-quit" aria-label="隱藏到系統匣">×</button>
+        </div>
+      </header>
+
+      <div class="stage">
+        <aside class="rail">
+          <h2>播放器</h2>
+          <div class="players" id="players"></div>
+        </aside>
+
+        <main class="main" id="main">
+          <section class="gate" aria-label="幀率閘門">
+            <div class="fps-block">
+              <dl>
+                <dt>來源</dt>
+                <dd id="src-fps" aria-live="polite">—</dd>
+              </dl>
+            </div>
+            <div class="gate-arrow" aria-hidden="true">→</div>
+            <div class="fps-block target">
+              <dl>
+                <dt>輸出</dt>
+                <dd id="dst-fps" aria-live="polite">—</dd>
+              </dl>
+            </div>
+            <p class="engine-line" id="engine-line">RIFE 4.6 · TensorRT · CUDA</p>
+          </section>
+
+          <section class="controls">
+            <button type="button" class="toggle" id="toggle" aria-pressed="false">
+              <span class="toggle-kicker">即時補幀</span>
+              <span class="toggle-label">未啟用</span>
+            </button>
+            <div>
+              <div class="profiles" id="profiles" role="group" aria-label="目標幀率"></div>
+            </div>
+          </section>
+
+          <section class="sliders">
+            <div class="field">
+              <label for="scene">場景切換閾值 <span id="scene-val">0.10</span></label>
+              <input id="scene" type="range" min="0.04" max="0.22" step="0.01" value="0.10" />
+            </div>
+            <div class="field">
+              <label for="streams">GPU 串流 <span id="streams-val">2</span></label>
+              <input id="streams" type="range" min="1" max="3" step="1" value="2" />
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <footer class="footer-bar">
+        <div class="gpu-meter">
+          <div class="gpu-head">
+            <span>GPU</span>
+            <span id="gpu-stat">—</span>
+          </div>
+          <div class="bar" aria-hidden="true"><span id="gpu-bar"></span></div>
+        </div>
+        <div class="checks" id="checks"></div>
+        <div class="setup">
+          <button type="button" id="setup"><span>安裝 TensorRT 執行環境</span></button>
+        </div>
+      </footer>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

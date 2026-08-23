@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+from fluid_motion.paths import default_mpv_root, engine_cache_dir
+
+
+@dataclass
+class Check:
+    id: str
+    label: str
+    ok: bool
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RuntimeStatus:
+    mpv_root: str
+    ready: bool
+    checks: list[Check] = field(default_factory=list)
+    rife_onnx: str = ""
+    vsmlrt: str = ""
+    vstrt: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mpv_root": self.mpv_root,
+            "ready": self.ready,
+            "checks": [c.to_dict() for c in self.checks],
+            "rife_onnx": self.rife_onnx,
+            "vsmlrt": self.vsmlrt,
+            "vstrt": self.vstrt,
+            "engine_cache": str(engine_cache_dir()),
+        }
+
+
+def _exists(path: Path) -> bool:
+    return path.is_file()
+
+
+def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
+    root = Path(mpv_root) if mpv_root else default_mpv_root()
+    checks: list[Check] = []
+
+    mpv_exe = root / "mpv.exe"
+    checks.append(
+        Check("mpv", "mpv", mpv_exe.is_file(), str(mpv_exe) if mpv_exe.is_file() else "找不到 mpv.exe")
+    )
+
+    vs_dll = root / "vapoursynth.dll"
+    checks.append(
+        Check(
+            "vapoursynth",
+            "VapourSynth",
+            vs_dll.is_file(),
+            "便攜包已內建" if vs_dll.is_file() else "mpv 未附帶 vapoursynth.dll",
+        )
+    )
+
+    misc = root / "vs-plugins" / "MiscFilters.dll"
+    checks.append(
+        Check("scdetect", "場景偵測 (misc.SCDetect)", misc.is_file(), str(misc) if misc.is_file() else "缺少 MiscFilters.dll")
+    )
+
+    vsmlrt = None
+    for candidate in (root / "vsmlrt.py", root / "vs-plugins" / "vsmlrt.py"):
+        if candidate.is_file():
+            vsmlrt = candidate
+            break
+    checks.append(
+        Check("vsmlrt", "vs-mlrt", vsmlrt is not None, str(vsmlrt) if vsmlrt else "尚未安裝 vsmlrt.py")
+    )
+
+    vstrt = None
+    for name in ("vstrt.dll", "vsmlrt.dll"):
+        candidate = root / "vs-plugins" / name
+        if candidate.is_file():
+            vstrt = candidate
+            break
+    nvinfer = list((root / "vs-plugins").glob("nvinfer*.dll")) if (root / "vs-plugins").is_dir() else []
+    cuda_dir = root / "vs-plugins" / "vsmlrt-cuda"
+    trt_ok = vstrt is not None and (bool(nvinfer) or cuda_dir.is_dir())
+    trt_detail = "TensorRT 插件就緒" if trt_ok else "需要 vstrt.dll 與 TensorRT/CUDA runtime"
+    checks.append(Check("tensorrt", "TensorRT + CUDA", trt_ok, trt_detail))
+
+    onnx = None
+    for rel in (
+        Path("vs-plugins") / "models" / "rife" / "rife_v4.6.onnx",
+        Path("vs-plugins") / "models" / "rife_v2" / "rife_v4.6.onnx",
+        Path("models") / "rife" / "rife_v4.6.onnx",
+        Path("models") / "rife_v2" / "rife_v4.6.onnx",
+    ):
+        candidate = root / rel
+        if candidate.is_file():
+            onnx = candidate
+            break
+    checks.append(
+        Check("rife46", "RIFE 4.6 ONNX", onnx is not None, str(onnx) if onnx else "尚未下載 rife_v4.6.onnx")
+    )
+
+    python_ok = (root / "python.exe").is_file() and (root / "python312.dll").is_file()
+    checks.append(
+        Check("python", "mpv 內嵌 Python 3.12", python_ok, str(root / "python.exe") if python_ok else "缺少內嵌 Python")
+    )
+
+    ready = all(c.ok for c in checks)
+    return RuntimeStatus(
+        mpv_root=str(root),
+        ready=ready,
+        checks=checks,
+        rife_onnx=str(onnx or ""),
+        vsmlrt=str(vsmlrt or ""),
+        vstrt=str(vstrt or ""),
+    )

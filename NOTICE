@@ -1,0 +1,21 @@
+Fluid Motion includes or downloads third-party components:
+
+- RIFE (Real-Time Intermediate Flow Estimation)
+  https://github.com/hzwer/Practical-RIFE
+  Used as ONNX model files (RIFE 4.6) via vs-mlrt.
+
+- vs-mlrt (VapourSynth Machine Learning Runtime)
+  https://github.com/AmusementClub/vs-mlrt
+  TensorRT / CUDA backend for realtime interpolation.
+
+- mpv
+  https://mpv.io
+  Not bundled. Must be installed separately, preferably a build with VapourSynth.
+
+- VapourSynth
+  https://www.vapoursynth.com
+  Not bundled; often already present in portable mpv packages.
+
+- NVIDIA TensorRT and CUDA runtime
+  Downloaded on first-run setup from vs-mlrt releases.
+  Subject to NVIDIA's own licenses. Not covered by this project's MIT license.

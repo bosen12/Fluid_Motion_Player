@@ -1,0 +1,50 @@
+/* Hallmark · pre-emit critique: P4 H5 E4 S4 R4 V4
+ * Hallmark · genre: atmospheric · macrostructure: Workbench (control surface)
+ * tone: technical · theme: custom film-gate · enrichment: none
+ * nav: N9 edge-aligned titlebar · footer: none (tray app)
+ * audience: mpv + NVIDIA · use: toggle realtime RIFE · fonts: Tomorrow + Geist + Geist Mono
+ */
+:root {
+  --color-paper: oklch(13.4% 0.02 48);
+  --color-paper-2: oklch(17.2% 0.022 48);
+  --color-paper-3: oklch(21.4% 0.024 50);
+  --color-ink: oklch(93% 0.016 78);
+  --color-muted: oklch(70% 0.028 70);
+  --color-faint: oklch(52% 0.03 60);
+  --color-accent: oklch(79% 0.14 72);
+  --color-accent-dim: oklch(79% 0.14 72 / 0.16);
+  --color-focus: oklch(79% 0.14 72);
+  --color-live: oklch(76% 0.13 155);
+  --color-danger: oklch(68% 0.16 28);
+  --color-rule: oklch(30% 0.02 50);
+  --font-display: "Tomorrow", "Geist", ui-sans-serif, sans-serif;
+  --font-body: "Geist", ui-sans-serif, sans-serif;
+  --font-outlier: "Geist Mono", ui-monospace, monospace;
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --text-xs: 0.64rem;
+  --text-sm: 0.8rem;
+  --text-base: 1rem;
+  --text-md: 1.25rem;
+  --text-lg: 1.5625rem;
+  --text-xl: 1.9531rem;
+  --text-2xl: 2.4414rem;
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms;
+  --dur-short: 180ms;
+  --dur-mid: 280ms;
+  --z-base: 1;
+  --z-raised: 10;
+  --z-sticky: 200;
+  --z-modal: 400;
+}

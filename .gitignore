@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Packaging
+build/
+dist/
+FluidMotion.exe
+
+# Runtime / models
+*.engine
+*.onnx
+engines/
+downloads/
+
+# Local agent / editor
+.hallmark/
+.planning/
+task_plan.md
+findings.md
+progress.md
+.idea/
+.vscode/
+*.log
+AppData/

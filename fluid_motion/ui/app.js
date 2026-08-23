@@ -1,0 +1,208 @@
+const PROFILES = [
+  { id: "2x", label: "2×" },
+  { id: "3x", label: "3×" },
+  { id: "60", label: "60" },
+  { id: "120", label: "120" },
+  { id: "144", label: "144" },
+  { id: "display", label: "螢幕" },
+];
+
+const mock = {
+  settings: {
+    enabled: false,
+    profile: "2x",
+    scene_threshold: 0.1,
+    trt_streams: 2,
+    autostart: false,
+  },
+  players: [],
+  gpu: {
+    name: "NVIDIA GeForce RTX 5070 Ti",
+    utilization: 0,
+    memory_used_mb: 0,
+    memory_total_mb: 16303,
+    power_w: 0,
+    available: true,
+  },
+  runtime: {
+    ready: false,
+    checks: [
+      { id: "mpv", label: "mpv", ok: true },
+      { id: "vapoursynth", label: "VapourSynth", ok: true },
+      { id: "tensorrt", label: "TensorRT + CUDA", ok: false },
+      { id: "rife46", label: "RIFE 4.6 ONNX", ok: false },
+    ],
+  },
+  error: "",
+  bootstrap: { running: false, message: "", progress: 0 },
+  player_count: 0,
+  connected: 0,
+};
+
+function api() {
+  return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+}
+
+async function call(name, ...args) {
+  const bridge = api();
+  if (!bridge || typeof bridge[name] !== "function") {
+    if (name === "get_state") return mock;
+    return mock;
+  }
+  return bridge[name](...args);
+}
+
+function $(id) {
+  return document.getElementById(id);
+}
+
+function setPressed(el, on) {
+  el.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+function renderPlayers(players) {
+  const root = $("players");
+  if (!players.length) {
+    root.innerHTML = `<p class="empty">尚未偵測到 mpv。播放影片後會自動接上。</p>`;
+    return;
+  }
+  root.innerHTML = players
+    .map((p) => {
+      const res = p.width ? `${p.width}×${p.height}` : "";
+      return `<article class="player" data-active="${p.connected && p.interpolation}">
+        <div class="player-name"><span>mpv</span><span>${p.connected ? "已連線" : "未連線"}</span></div>
+        <div class="player-media">${p.media || res || "pid " + p.pid}</div>
+      </article>`;
+    })
+    .join("");
+}
+
+function renderChecks(checks) {
+  $("checks").innerHTML = (checks || [])
+    .map((c) => `<span class="check" data-ok="${c.ok}">${c.label}</span>`)
+    .join("");
+}
+
+function renderProfiles(active) {
+  const root = $("profiles");
+  root.innerHTML = PROFILES.map((p) => {
+    const pressed = p.id === active;
+    return `<button type="button" class="chip" data-profile="${p.id}" aria-pressed="${pressed}">${p.label}</button>`;
+  }).join("");
+}
+
+function tickNumber(el, next) {
+  if (el.textContent === next) return;
+  el.textContent = next;
+}
+
+function render(state) {
+  const enabled = Boolean(state.settings.enabled);
+  const connected = state.connected || 0;
+  $("live").dataset.on = connected > 0 ? "true" : "false";
+  $("live-text").textContent = connected > 0 ? "已接上 mpv" : "等待 mpv";
+  $("gpu-name").textContent = state.gpu.available ? state.gpu.name : "未偵測到 NVIDIA GPU";
+
+  const player = (state.players || []).find((p) => p.connected) || state.players[0];
+  tickNumber($("src-fps"), player && player.fps ? player.fps : "—");
+  tickNumber($("dst-fps"), player && player.estimated_vfps ? player.estimated_vfps : enabled ? "…" : "—");
+
+  const toggle = $("toggle");
+  setPressed(toggle, enabled);
+  toggle.querySelector(".toggle-label").textContent = enabled ? "補幀中" : "未啟用";
+  toggle.disabled = !state.runtime.ready && !enabled;
+  toggle.dataset.state = state.runtime.ready ? "ready" : "error";
+
+  renderPlayers(state.players || []);
+  renderProfiles(state.settings.profile);
+  renderChecks(state.runtime.checks);
+
+  $("scene").value = state.settings.scene_threshold;
+  $("scene-val").textContent = Number(state.settings.scene_threshold).toFixed(2);
+  $("streams").value = state.settings.trt_streams;
+  $("streams-val").textContent = String(state.settings.trt_streams);
+
+  const util = state.gpu.utilization || 0;
+  $("gpu-bar").style.width = `${util}%`;
+  $("gpu-stat").textContent = state.gpu.available
+    ? `${util}% · ${state.gpu.memory_used_mb} / ${state.gpu.memory_total_mb} MB · ${Math.round(state.gpu.power_w)} W`
+    : "—";
+
+  const setupBtn = $("setup");
+  const ready = Boolean(state.runtime.ready);
+  setupBtn.hidden = ready && !state.bootstrap.running;
+  setupBtn.disabled = Boolean(state.bootstrap.running);
+  setupBtn.dataset.state = state.bootstrap.running ? "loading" : "idle";
+  setupBtn.querySelector("span").textContent = state.bootstrap.running
+    ? state.bootstrap.message || "安裝中"
+    : "安裝 TensorRT 執行環境";
+
+  const toast = $("toast");
+  if (state.error) {
+    toast.dataset.open = "true";
+    toast.textContent = state.error;
+  } else if (state.bootstrap.message && state.bootstrap.running) {
+    toast.dataset.open = "true";
+    toast.style.borderLeftColor = "var(--color-accent)";
+    toast.textContent = state.bootstrap.message;
+  } else {
+    toast.dataset.open = "false";
+    toast.style.borderLeftColor = "";
+  }
+
+  $("engine-line").textContent = ready
+    ? "RIFE 4.6 · TensorRT · CUDA · 場景偵測已就緒"
+    : "還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。";
+}
+
+async function refresh() {
+  try {
+    const state = await call("get_state");
+    render(state);
+  } catch (err) {
+    $("toast").dataset.open = "true";
+    $("toast").textContent = String(err);
+  }
+}
+
+function bind() {
+  $("toggle").addEventListener("click", async () => {
+    const pressed = $("toggle").getAttribute("aria-pressed") === "true";
+    $("toggle").setAttribute("aria-pressed", pressed ? "false" : "true");
+    const state = await call("set_enabled", !pressed);
+    render(state);
+  });
+
+  $("profiles").addEventListener("click", async (event) => {
+    const btn = event.target.closest("[data-profile]");
+    if (!btn) return;
+    const state = await call("set_profile", btn.dataset.profile);
+    render(state);
+  });
+
+  $("scene").addEventListener("input", () => {
+    $("scene-val").textContent = Number($("scene").value).toFixed(2);
+  });
+  $("scene").addEventListener("change", async () => {
+    render(await call("set_scene", Number($("scene").value)));
+  });
+  $("streams").addEventListener("input", () => {
+    $("streams-val").textContent = $("streams").value;
+  });
+  $("streams").addEventListener("change", async () => {
+    render(await call("set_streams", Number($("streams").value)));
+  });
+  $("setup").addEventListener("click", async () => {
+    render(await call("start_setup"));
+  });
+  $("btn-hide").addEventListener("click", () => call("hide"));
+  $("btn-quit").addEventListener("click", () => call("hide"));
+  $("btn-min").addEventListener("click", () => call("hide"));
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  bind();
+  render(mock);
+  refresh();
+  setInterval(refresh, 900);
+});
