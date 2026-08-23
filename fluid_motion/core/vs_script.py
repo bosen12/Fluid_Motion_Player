@@ -72,8 +72,14 @@ def parse_fps(value: Any) -> Fraction | None:
     return frac if frac > 0 else None
 
 
-def target_multi(profile: str, source_fps: Fraction | None, display_fps: float | None) -> tuple[int | Fraction, bool]:
-    """Return (multi, video_player). Integer multi is preferred for realtime."""
+def target_multi(profile: str, source_fps: Fraction | None, display_fps: float | None) -> tuple[int, bool]:
+    """Return (multi, video_player).
+
+    vsmlrt's RIFE call only produces extra frames for an integer multi — a
+    Fraction (e.g. 2.5) is accepted without error but silently generates no
+    speedup at all — so any target is always rounded to the nearest usable
+    integer instead of passed through as-is.
+    """
     if profile == "3x":
         return 3, False
     if profile == "2x":
@@ -88,19 +94,12 @@ def target_multi(profile: str, source_fps: Fraction | None, display_fps: float |
     src = source_fps or Fraction(24000, 1001)
     if src <= 0:
         return 2, False
-    # Already at or above the target: do not invent a 2x.
-    if float(src) >= float(target) - 0.5:
+    # Round to the nearest achievable integer. If that's 1x, the source is
+    # already close enough to the target that there's nothing to gain.
+    snapped = round(float(target) / float(src))
+    if snapped <= 1:
         return 1, False
-    multi = Fraction(target).limit_denominator(120) / src
-    if multi < 1:
-        return 1, False
-    if multi.denominator == 1:
-        return int(multi), False
-    # Snap near-integers to 2/3 instead of 2.4x video_player path
-    if abs(float(multi) - round(float(multi))) < 0.12:
-        snapped = max(2, int(round(float(multi))))
-        return snapped, False
-    return multi, True
+    return snapped, False
 
 
 def _py_multi(multi: int | Fraction) -> str:

@@ -44,7 +44,18 @@ class _FakeIpc:
         return None
 
 
-def test_apply_applies_small_fractional_multiplier_instead_of_dropping_it(tmp_path: Path, monkeypatch):
+def test_apply_applies_when_target_rounds_to_a_real_multiplier(tmp_path: Path, monkeypatch):
+    from fluid_motion.core.inject import apply
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    ipc = _FakeIpc({"container-fps": 50, "estimated-vfps": 50, "vsync-ratio": 1})
+    settings = Settings(profile="120", mpv_root=str(tmp_path))
+    apply(ipc, settings, tmp_path)
+    add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
+    assert add_calls, "120/50 = 2.4x rounds to a real 2x multiplier and should apply"
+
+
+def test_apply_skips_when_nearest_integer_multiplier_is_only_one(tmp_path: Path, monkeypatch):
     from fluid_motion.core.inject import apply
 
     monkeypatch.setenv("APPDATA", str(tmp_path))
@@ -52,7 +63,7 @@ def test_apply_applies_small_fractional_multiplier_instead_of_dropping_it(tmp_pa
     settings = Settings(profile="120", mpv_root=str(tmp_path))
     apply(ipc, settings, tmp_path)
     add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
-    assert add_calls, "a 1.2x multiplier (100fps source -> 120 target) should still apply, not be dropped"
+    assert not add_calls, "120/100 = 1.2x rounds to 1 -- vsmlrt only supports integer multi, nothing achievable"
 
 
 def test_apply_skips_only_when_source_already_at_target(tmp_path: Path, monkeypatch):

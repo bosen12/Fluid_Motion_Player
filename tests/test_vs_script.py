@@ -34,11 +34,14 @@ def test_target_multi_120_from_24_is_integer():
     assert player is False
 
 
-def test_target_multi_60_from_film_is_fractional():
+def test_target_multi_60_from_film_snaps_to_nearest_integer():
+    # 60 / 23.976 = 2.5025x — vsmlrt's RIFE silently produces no extra frames
+    # for a Fraction multi, so this must round to a usable integer (3), not
+    # pass a Fraction through.
     multi, player = target_multi("60", Fraction(24000, 1001), None)
-    assert player is True
-    assert isinstance(multi, Fraction)
-    assert float(multi) > 2
+    assert player is False
+    assert multi == 3
+    assert isinstance(multi, int)
 
 
 def test_target_multi_60fps_source_stays_integer_2x():
@@ -62,6 +65,24 @@ def test_target_multi_120_from_60_is_2x():
 def test_target_multi_60_on_60fps_is_passthrough():
     multi, player = target_multi("60", Fraction(60, 1), None)
     assert multi == 1
+
+
+def test_target_multi_rounds_down_when_closer_to_lower_integer():
+    # 100 / 23.976 = 4.171x -> rounds down to 4, not up.
+    multi, player = target_multi("display", Fraction(24000, 1001), 100.0)
+    assert multi == 4
+    assert player is False
+
+
+def test_target_multi_never_returns_a_fraction():
+    for profile, src, display in [
+        ("60", Fraction(24000, 1001), None),
+        ("120", Fraction(24000, 1001), None),
+        ("144", Fraction(30000, 1001), None),
+        ("display", Fraction(24000, 1001), 100.0),
+    ]:
+        multi, _ = target_multi(profile, src, display)
+        assert isinstance(multi, int)
 
 
 def test_target_multi_3x_on_film_stays_3x():
