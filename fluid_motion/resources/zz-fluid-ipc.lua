@@ -7,7 +7,10 @@ local appdata = os.getenv("APPDATA") or ""
 local alive_path = appdata .. "\\FluidMotion\\alive"
 local hotkey_path = appdata .. "\\FluidMotion\\hotkey"
 local seek_hold_path = appdata .. "\\FluidMotion\\seek_hold"
-local SEEK_RESUME = 0.4
+-- Quiet period after a seek settles before re-applying the filter. Short on
+-- purpose: this is just debounce against still-dragging, not real work --
+-- the actual rebuild cost is entirely in apply() afterward.
+local SEEK_RESUME = 0.15
 local seek_timer
 local seek_held = false
 
