@@ -9,7 +9,9 @@ from fluid_motion.paths import config_path, default_mpv_root
 
 
 PROFILES = ("2x", "3x", "60", "120", "144", "display")
-RIFE_MODELS = (426, 425, 46, 4251)  # 4251 = RIFE 4.25 lite (faster, lower quality)
+RIFE_MODELS = (426, 425, 46)
+# 4251 (4.25 lite) is not offered: vsmlrt TensorRT on RTX 50 copies frame n
+# instead of interpolating, which reads as a flashing green/wrong picture.
 
 
 @dataclass
