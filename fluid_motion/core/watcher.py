@@ -34,6 +34,12 @@ ENGINE_GROWTH_GRACE = 3.0
 # an mpv that is refusing vf commands would otherwise be hammered forever.
 APPLY_RETRY_BACKOFF = 2.0
 
+# The hotkey file is polled far faster than tick() runs. Noticing an F3 press
+# is a single stat() -- it does not need to wait behind tick()'s IPC round
+# trips and process enumeration, which is what used to put up to 300ms in
+# front of every toggle before any actual work started.
+HOTKEY_POLL = 0.05
+
 
 def is_disconnect_error(message: str) -> bool:
     """True when mpv closed the named pipe; not a filter-setup failure."""
@@ -85,6 +91,7 @@ class Engine:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
+        self._hotkey_thread: threading.Thread | None = None
         self._on_change: Callable[[], None] | None = None
         self._on_show: Callable[[], None] | None = None
 
@@ -108,6 +115,12 @@ class Engine:
         # this, or mpv wrongly reports Fluid Motion as not running mid-apply.
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name="fluid-heartbeat", daemon=True)
         self._heartbeat_thread.start()
+        # Likewise its own thread, and the sole consumer of the hotkey file:
+        # polling it here rather than from tick() is what makes F3 feel
+        # immediate, and a single consumer means two threads can't both read
+        # the same press before either unlinks it.
+        self._hotkey_thread = threading.Thread(target=self._hotkey_loop, name="fluid-hotkey", daemon=True)
+        self._hotkey_thread.start()
         self._write_heartbeat()
 
     def set_on_show(self, on_show: Callable[[], None] | None) -> None:
@@ -228,10 +241,10 @@ class Engine:
         return True
 
     def _consume_hotkey(self) -> None:
-        # set_enabled() ends with tick(), which calls back in here. The hotkey
-        # file is unlinked before dispatch so that terminates, but a hotkey
-        # landing inside that window would nest another level; guard instead of
-        # relying on the timing.
+        # Only _hotkey_loop calls this, so presses are dispatched one at a
+        # time and the file has a single consumer. The guard stays because
+        # set_enabled() ends with tick(), and a dispatch that ends up back
+        # here would otherwise nest.
         if self._in_hotkey:
             return
         path = hotkey_path()
@@ -264,6 +277,13 @@ class Engine:
         while not self._stop.wait(1.0):
             self._write_heartbeat()
 
+    def _hotkey_loop(self) -> None:
+        while not self._stop.wait(HOTKEY_POLL):
+            try:
+                self._consume_hotkey()
+            except Exception as exc:  # noqa: BLE001 — keep the poller alive
+                self._error = str(exc)
+
     def _loop(self) -> None:
         while not self._stop.wait(0.3):
             try:
@@ -285,7 +305,6 @@ class Engine:
         the next background tick finishes it.
         """
         self._write_heartbeat()
-        self._consume_hotkey()
         players = iter_mpv_processes()
         live: dict[int, MpvIpc] = {}
         with self._lock:
