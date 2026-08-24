@@ -82,19 +82,33 @@ def _is_helper_mpv(proc: Any) -> bool:
 def _embedded_player_pids(seen: set[int]) -> set[int]:
     """Hosts that embed libmpv in-process (e.g. AX Player via python-mpv) never
     show up under mpv's own process name -- their OS process is python.exe or
-    whatever wraps it. But zz-fluid-ipc.lua always opens a `fluid-mpv-<pid>`
-    named pipe regardless of what process created it, so fall back to reading
-    the pid straight out of the pipe name when the process-name scan misses it.
+    whatever wraps it.
+
+    zz-fluid-ipc.lua is supposed to open a `fluid-mpv-<pid>` named pipe, but
+    in practice this mpv config also ships mpvSockets.lua, and Lua scripts
+    load alphabetically -- "zz-" guarantees zz-fluid-ipc.lua loads *last*.
+    mpvSockets.lua claims `input-ipc-server` first (binding it to
+    `%TEMP%\\mpvSockets\\<pid>`); mpv's IPC listener is only ever bound once,
+    so zz-fluid-ipc.lua's later rebind to `fluid-mpv-<pid>` is silently a
+    no-op and that pipe never actually exists. This is true for *every* mpv
+    instance using this config, embedded or standalone -- confirmed by
+    checking a live instance's pipes directly. mpvSockets.lua's own
+    pid-named pipe is the one that's real, and it's already among
+    candidate_pipes()'s fallback names, so just discover the pid from it.
     """
     pids: set[int] = set()
-    prefix = "fluid-mpv-"
     for raw in list_win_pipes():
         low = raw.lower()
-        if not low.startswith(prefix) or "thumbfast" in low:
+        if "thumbfast" in low:
             continue
-        suffix = raw[len(prefix):]
-        if suffix.isdigit():
-            pid = int(suffix)
+        if low.startswith("fluid-mpv-"):
+            pid_str = raw[len("fluid-mpv-") :]
+        elif "mpvsockets" in low:
+            pid_str = raw.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        else:
+            continue
+        if pid_str.isdigit():
+            pid = int(pid_str)
             if pid not in seen:
                 pids.add(pid)
     return pids
