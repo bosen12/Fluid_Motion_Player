@@ -230,7 +230,7 @@ function render(state) {
     : "安裝 TensorRT 執行環境";
 
   const toast = $("toast");
-  if (state.error) {
+  if (state.error && connected > 0) {
     toast.dataset.open = "true";
     toast.textContent = state.error;
   } else if (state.bootstrap.message && state.bootstrap.running) {

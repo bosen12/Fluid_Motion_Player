@@ -33,6 +33,19 @@ ENGINE_GROWTH_GRACE = 3.0
 # A failed apply() is retried by the next tick, but not at the 0.3s tick rate:
 # an mpv that is refusing vf commands would otherwise be hammered forever.
 APPLY_RETRY_BACKOFF = 2.0
+
+
+def is_disconnect_error(message: str) -> bool:
+    """True when mpv closed the named pipe; not a filter-setup failure."""
+    text = str(message)
+    lowered = text.lower()
+    if "管道正關閉" in text or "broken pipe" in lowered:
+        return True
+    if "writefile" in lowered and "232" in text:
+        return True
+    return "ipc closed" in lowered
+
+
 # How long a UI-thread settings change waits for the background tick to finish
 # an apply before handing the work off to the next tick instead of blocking.
 UI_APPLY_WAIT = 0.5
@@ -175,7 +188,8 @@ class Engine:
         try:
             apply(ipc, self.settings, Path(self.settings.mpv_root), announce=announce)
         except IpcError as exc:
-            self._error = str(exc)
+            if not is_disconnect_error(str(exc)):
+                self._error = str(exc)
             with self._lock:
                 self._applied.pop(pid, None)
                 self._retry_at[pid] = time.monotonic() + APPLY_RETRY_BACKOFF
@@ -359,6 +373,8 @@ class Engine:
                 self._applied.pop(pid, None)
             for pid in [p for p in self._retry_at if p not in live]:
                 self._retry_at.pop(pid, None)
+            if not live:
+                self._error = ""
         cache = engine_cache_info()
         now = time.monotonic()
         self._engine_growing_until = next_growth_deadline(

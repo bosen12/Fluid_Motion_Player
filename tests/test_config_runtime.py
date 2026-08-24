@@ -538,6 +538,11 @@ def test_rife_425_lite_is_not_offered_in_ui():
     assert "4251" not in js
 
 
+def test_toast_hidden_when_no_player_is_connected():
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "state.error && connected > 0" in js
+
+
 def _tick_engine(monkeypatch, settings, ipc, pid=4321):
     """An Engine wired to exactly one fake mpv, with tick() safe to call."""
     from fluid_motion.core import watcher as watcher_mod
@@ -713,6 +718,44 @@ def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
     engine.tick()
     assert seen == ["120"]
     assert engine._error == ""
+
+
+def test_pipe_closing_apply_is_not_surfaced_as_error(monkeypatch, tmp_path):
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+
+    def dying(ipc_, s_, root_, announce=False):
+        raise IpcError("無法加入補幀濾鏡：(232, 'WriteFile', '管道正關閉中。')")
+
+    monkeypatch.setattr(watcher_mod, "apply", dying)
+    engine.tick()
+    assert engine._error == ""
+    assert engine.state()["error"] == ""
+
+
+def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+
+    def failing(ipc_, s_, root_, announce=False):
+        raise IpcError("mpv said no")
+
+    monkeypatch.setattr(watcher_mod, "apply", failing)
+    engine.tick()
+    assert engine._error == "mpv said no"
+
+    monkeypatch.setattr(watcher_mod, "iter_mpv_processes", lambda: [])
+    engine.tick()
+    assert engine._error == ""
+    assert engine.state()["error"] == ""
 
 
 def test_filter_key_changes_with_every_setting_that_rewrites_the_vpy():
