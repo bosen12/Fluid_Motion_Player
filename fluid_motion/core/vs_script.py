@@ -136,6 +136,21 @@ def _py_multi(multi: int | Fraction) -> str:
     return str(int(multi))
 
 
+def effective_backend(
+    gpu_name: str,
+    *,
+    trt_streams: int,
+    cuda_graph: bool,
+    force_accel: bool,
+) -> tuple[int, bool, bool]:
+    """Streams, CUDA-graph flag, and safe_mode after the RTX 50 flicker gate."""
+    risky = flicker_risk(gpu_name)
+    safe_mode = risky and not force_accel
+    streams = 1 if safe_mode else max(1, int(trt_streams))
+    graph = False if safe_mode else bool(cuda_graph)
+    return streams, graph, safe_mode
+
+
 def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_fps: float | None = None) -> str:
     multi, _video_player = target_multi(params.profile, source_fps, display_fps)
     engine = Path(params.engine_folder).as_posix() if params.engine_folder else ""
@@ -143,10 +158,13 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
     # CUDA graphs + parallel streams tile-flicker on RTX 50 (Blackwell); unknown
     # GPUs fail toward the same safe path instead of assuming they're fine.
     # force_accel is a user-requested escape hatch to test past that gate.
+    streams, cuda_graph, safe_mode = effective_backend(
+        params.gpu_name,
+        trt_streams=params.trt_streams,
+        cuda_graph=params.cuda_graph,
+        force_accel=params.force_accel,
+    )
     risky = flicker_risk(params.gpu_name)
-    safe_mode = risky and not params.force_accel
-    cuda_graph = False if safe_mode else bool(params.cuda_graph)
-    streams = 1 if safe_mode else max(1, int(params.trt_streams))
     gpu_note = params.gpu_name or "unknown"
     if safe_mode:
         mode_note = "safe mode (no CUDA graph / single stream)"

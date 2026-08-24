@@ -187,6 +187,17 @@ def test_render_force_accel_overrides_blackwell_safe_mode():
     assert "user override" in text
 
 
+def test_effective_backend_clamps_blackwell_without_override():
+    from fluid_motion.core.vs_script import effective_backend
+
+    streams, graph, safe = effective_backend(
+        "NVIDIA GeForce RTX 5070 Ti", trt_streams=4, cuda_graph=True, force_accel=False
+    )
+    assert safe is True
+    assert streams == 1
+    assert graph is False
+
+
 def test_force_accel_has_no_effect_on_safe_gpu():
     text = render_vpy(
         RifeParams(

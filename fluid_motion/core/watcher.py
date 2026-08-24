@@ -27,7 +27,7 @@ from fluid_motion.core.inject import (
 from fluid_motion.core.mpv_detect import PlayerProcess, find_mpv_executable, iter_mpv_processes, mpv_root_from
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
 from fluid_motion.core.runtime import diagnose
-from fluid_motion.core.vs_script import parse_fps, target_multi
+from fluid_motion.core.vs_script import effective_backend, parse_fps, target_multi
 
 ENGINE_GROWTH_GRACE = 3.0
 # A failed apply() is retried by the next tick, but not at the 0.3s tick rate:
@@ -153,13 +153,19 @@ class Engine:
         old multiplier is wrong for the new source.
         """
         cfg = self.settings
+        streams, graph, _ = effective_backend(
+            self._gpu.name,
+            trt_streams=cfg.trt_streams,
+            cuda_graph=cfg.cuda_graph,
+            force_accel=cfg.force_accel,
+        )
         return (
             cfg.profile,
             int(cfg.rife_model),
             float(cfg.scene_threshold),
-            int(cfg.trt_streams),
+            int(streams),
             bool(cfg.fp16),
-            bool(cfg.cuda_graph),
+            bool(graph),
             bool(cfg.force_accel),
             str(cfg.mpv_root),
             int(multi),
@@ -188,11 +194,13 @@ class Engine:
         try:
             apply(ipc, self.settings, Path(self.settings.mpv_root), announce=announce)
         except IpcError as exc:
-            if not is_disconnect_error(str(exc)):
+            gone = is_disconnect_error(str(exc))
+            if not gone:
                 self._error = str(exc)
             with self._lock:
                 self._applied.pop(pid, None)
-                self._retry_at[pid] = time.monotonic() + APPLY_RETRY_BACKOFF
+                if not gone:
+                    self._retry_at[pid] = time.monotonic() + APPLY_RETRY_BACKOFF
             return False
         finally:
             self._apply_lock.release()
@@ -210,7 +218,8 @@ class Engine:
         try:
             remove(ipc, announce=announce)
         except IpcError as exc:
-            self._error = str(exc)
+            if not is_disconnect_error(str(exc)):
+                self._error = str(exc)
             return False
         finally:
             self._apply_lock.release()

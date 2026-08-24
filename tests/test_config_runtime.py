@@ -25,6 +25,7 @@ class _FakeIpc:
     def __init__(self, props: dict):
         self.props = dict(props)
         self.commands: list[tuple] = []
+        self.sets: list[tuple] = []
         self.vf: list = []
         self.path = "fake-mpv-pipe"
         self.closed = False
@@ -38,6 +39,7 @@ class _FakeIpc:
         return self.props.get(name)
 
     def set(self, name: str, value):
+        self.sets.append((name, value))
         self.props[name] = value
 
     def command(self, *args, **kwargs):
@@ -58,6 +60,29 @@ def test_apply_applies_when_target_rounds_to_a_real_multiplier(tmp_path: Path, m
     apply(ipc, settings, tmp_path)
     add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
     assert add_calls, "120/50 = 2.4x rounds to a real 2x multiplier and should apply"
+
+
+def test_apply_does_not_unminimize_or_reset_matching_props(tmp_path: Path, monkeypatch):
+    from fluid_motion.core.inject import apply
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    ipc = _FakeIpc(
+        {
+            "container-fps": 24,
+            "estimated-vfps": 24,
+            "interpolation": False,
+            "video-sync": "display-resample",
+            "hr-seek-framedrop": False,
+            "temporal-dither": False,
+            "window-minimized": True,
+        }
+    )
+    apply(ipc, Settings(profile="2x", mpv_root=str(tmp_path)), tmp_path)
+    names = [name for name, _ in ipc.sets]
+    assert "window-minimized" not in names
+    assert ipc.props["window-minimized"] is True
+    assert "interpolation" not in names
+    assert "video-sync" not in names
 
 
 def test_apply_skips_when_nearest_integer_multiplier_is_only_one(tmp_path: Path, monkeypatch):
@@ -543,6 +568,18 @@ def test_toast_hidden_when_no_player_is_connected():
     assert "state.error && connected > 0" in js
 
 
+def test_idle_toggle_does_not_claim_interpolating():
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "待命" in js
+    assert 'enabled ? "補幀中" : "未啟用"' not in js
+
+
+def test_idle_fps_gate_is_empty_without_a_player():
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "connected === 0" in js
+    assert "等待 mpv" in js
+
+
 def _tick_engine(monkeypatch, settings, ipc, pid=4321):
     """An Engine wired to exactly one fake mpv, with tick() safe to call."""
     from fluid_motion.core import watcher as watcher_mod
@@ -735,6 +772,7 @@ def test_pipe_closing_apply_is_not_surfaced_as_error(monkeypatch, tmp_path):
     engine.tick()
     assert engine._error == ""
     assert engine.state()["error"] == ""
+    assert 4321 not in engine._retry_at, "a dead pipe must not be retried"
 
 
 def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
@@ -759,9 +797,11 @@ def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
 
 
 def test_filter_key_changes_with_every_setting_that_rewrites_the_vpy():
+    from fluid_motion.core.gpu import GpuSnapshot
     from fluid_motion.core.watcher import Engine
 
     engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1))
+    engine._gpu = GpuSnapshot(name="NVIDIA GeForce RTX 4090", available=True)
     base = engine._filter_key(2)
     for field, value in (
         ("profile", "3x"),
@@ -773,11 +813,43 @@ def test_filter_key_changes_with_every_setting_that_rewrites_the_vpy():
         ("force_accel", True),
     ):
         engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1))
+        engine._gpu = GpuSnapshot(name="NVIDIA GeForce RTX 4090", available=True)
         setattr(engine.settings, field, value)
         assert engine._filter_key(2) != base, f"{field} must invalidate the applied snapshot"
     # A new file with a different source fps resolves to a different multi.
     engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1))
+    engine._gpu = GpuSnapshot(name="NVIDIA GeForce RTX 4090", available=True)
     assert engine._filter_key(3) != base
+
+
+def test_filter_key_ignores_streams_clamped_away_by_safe_mode():
+    from fluid_motion.core.gpu import GpuSnapshot
+    from fluid_motion.core.watcher import Engine
+
+    engine = Engine(Settings(profile="2x", rife_model=426, trt_streams=1, force_accel=False))
+    engine._gpu = GpuSnapshot(name="NVIDIA GeForce RTX 5070 Ti", available=True)
+    base = engine._filter_key(2)
+    engine.settings.trt_streams = 4
+    engine.settings.cuda_graph = True
+    assert engine._filter_key(2) == base, "safe mode already forces 1 stream / no graph"
+
+
+def test_remove_disconnect_is_not_surfaced_as_error(monkeypatch, tmp_path):
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    ipc = _FakeIpc({"container-fps": 23.976})
+    settings = Settings(enabled=False, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+
+    def dying(ipc_, announce=False):
+        raise IpcError("無法加入補幀濾鏡：(232, 'WriteFile', '管道正關閉中。')")
+
+    monkeypatch.setattr(watcher_mod, "remove", dying)
+    engine._applied[4321] = engine._filter_key(2)
+    ok = engine._remove_from(4321, ipc)
+    assert ok is False
+    assert engine._error == ""
 
 
 def test_tick_reapplies_on_stale_settings_not_only_on_a_missing_filter():

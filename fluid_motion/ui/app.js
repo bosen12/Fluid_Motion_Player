@@ -184,12 +184,26 @@ function render(state) {
   const player = (state.players || []).find((p) => p.connected) || (state.players || [])[0];
   const compiling = Boolean(state.engine_compiling);
   const settling = !compiling && Boolean(player && player.settling);
+  const interpolating = Boolean(
+    enabled && (state.players || []).some((p) => p.connected && p.interpolation)
+  );
   const srcEl = $("src-fps");
   const dstEl = $("dst-fps");
   const dstBlock = dstEl.closest(".fps-block");
   const outLabel = !compiling && !settling && player && (player.output_fps || player.estimated_vfps);
-  tickNumber(srcEl, player && player.fps ? player.fps : "—");
-  tickNumber(dstEl, outLabel ? outLabel : compiling ? "編譯中" : settling || enabled ? "…" : "—");
+  tickNumber(srcEl, connected && player && player.fps ? player.fps : "—");
+  tickNumber(
+    dstEl,
+    connected === 0
+      ? "—"
+      : outLabel
+        ? outLabel
+        : compiling
+          ? "編譯中"
+          : settling || enabled
+            ? "…"
+            : "—"
+  );
   const bad = !compiling && Boolean(player && player.fps_ok === false);
   dstBlock.classList.toggle("is-bad", bad);
   dstEl.classList.toggle("is-bad", bad);
@@ -197,7 +211,13 @@ function render(state) {
 
   const toggle = $("toggle");
   setPressed(toggle, enabled);
-  toggle.querySelector(".toggle-label").textContent = enabled ? "補幀中" : "未啟用";
+  toggle.querySelector(".toggle-label").textContent = !enabled
+    ? "未啟用"
+    : interpolating
+      ? "補幀中"
+      : connected > 0
+        ? "套用中"
+        : "待命";
   toggle.disabled = !state.runtime.ready && !enabled;
   toggle.dataset.state = state.runtime.ready ? "ready" : "error";
 
@@ -257,6 +277,8 @@ function render(state) {
     engine.textContent = target
       ? `輸出偏低 · 目標 ${target} · 實測 ${outLabel} — 效能不足`
       : "輸出偏低 — 效能不足";
+  } else if (connected === 0) {
+    engine.textContent = `${modelLabel(state.settings.rife_model)} · TensorRT · CUDA · 等待 mpv`;
   } else {
     engine.textContent = `${modelLabel(state.settings.rife_model)} · TensorRT · CUDA · 場景偵測已就緒`;
   }

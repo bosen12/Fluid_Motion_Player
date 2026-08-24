@@ -35,6 +35,31 @@ def _strip_other_vapoursynth(ipc: MpvIpc) -> None:
             continue
 
 
+_PLAYBACK_PROPS = (
+    ("interpolation", False),
+    ("video-sync", "display-resample"),
+    ("hr-seek-framedrop", False),
+    ("temporal-dither", False),
+)
+
+
+def _sync_playback_props(ipc: MpvIpc) -> None:
+    """Set only the playback props that actually differ. Never touch window-minimized:
+    flipping it on every apply un-minimizes mpv for no reason.
+    """
+    for name, want in _PLAYBACK_PROPS:
+        try:
+            current = ipc.get(name)
+        except IpcError:
+            current = None
+        if current == want:
+            continue
+        try:
+            ipc.set(name, want)
+        except IpcError:
+            pass
+
+
 def _vf_arg(script: Path | None = None) -> str:
     # Use ~~ so the path has no drive colon; mpv splits vf args on ':'.
     # concurrent-frames must stay 1: RIFE is temporal; parallel requests tile-flicker.
@@ -265,16 +290,7 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = F
         raise IpcError(f"無法加入補幀濾鏡：{exc}") from exc
     if not fluid_filter_loaded(ipc):
         raise IpcError("補幀濾鏡已送出，但沒有掛上 mpv 的 vf")
-    try:
-        ipc.set("interpolation", False)
-        ipc.set("video-sync", "display-resample")
-        ipc.set("hr-seek-framedrop", False)
-        ipc.set("temporal-dither", False)
-        # Do not switch gpu-api here: vulkan→d3d11 at runtime recreates vo and
-        # leaves mpv running with no visible window.
-        ipc.set("window-minimized", False)
-    except IpcError:
-        pass
+    _sync_playback_props(ipc)
     if announce:
         try:
             ipc.command("show-text", f"Fluid Motion  {rife_label(settings.rife_model)} TensorRT")
