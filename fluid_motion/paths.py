@@ -82,6 +82,10 @@ def seek_hold_path() -> Path:
     return roaming_dir() / "seek_hold"
 
 
+def debug_log_path() -> Path:
+    return roaming_dir() / "fluid_debug.log"
+
+
 def default_mpv_root() -> Path:
     candidates = [
         Path(r"C:\mpv"),
