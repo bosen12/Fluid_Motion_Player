@@ -79,10 +79,32 @@ def _is_helper_mpv(proc: Any) -> bool:
     return "thumbfast" in text or "--load-scripts=no" in text
 
 
+def _embedded_player_pids(seen: set[int]) -> set[int]:
+    """Hosts that embed libmpv in-process (e.g. AX Player via python-mpv) never
+    show up under mpv's own process name -- their OS process is python.exe or
+    whatever wraps it. But zz-fluid-ipc.lua always opens a `fluid-mpv-<pid>`
+    named pipe regardless of what process created it, so fall back to reading
+    the pid straight out of the pipe name when the process-name scan misses it.
+    """
+    pids: set[int] = set()
+    prefix = "fluid-mpv-"
+    for raw in list_win_pipes():
+        low = raw.lower()
+        if not low.startswith(prefix) or "thumbfast" in low:
+            continue
+        suffix = raw[len(prefix):]
+        if suffix.isdigit():
+            pid = int(suffix)
+            if pid not in seen:
+                pids.add(pid)
+    return pids
+
+
 def iter_mpv_processes() -> list[PlayerProcess]:
     found: list[PlayerProcess] = []
     if psutil is None:
         return found
+    seen: set[int] = set()
     # pid+name only: process_iter fetches every requested field for *every*
     # process on the box, and on Windows exe/cmdline each cost a handle open
     # plus a PEB read -- ~20ms for 600 processes, 3.3 times a second, forever.
@@ -98,9 +120,20 @@ def iter_mpv_processes() -> list[PlayerProcess]:
                 exe = proc.exe() or ""
             except (psutil.Error, OSError):
                 exe = ""
-            found.append(PlayerProcess(pid=int(proc.info["pid"]), name=name, exe=exe))
+            pid = int(proc.info["pid"])
+            found.append(PlayerProcess(pid=pid, name=name, exe=exe))
+            seen.add(pid)
         except (psutil.Error, TypeError, ValueError):
             continue
+    for pid in _embedded_player_pids(seen):
+        try:
+            proc = psutil.Process(pid)
+            name = proc.name()
+            exe = proc.exe() or ""
+        except (psutil.Error, OSError):
+            name, exe = "embedded-mpv", ""
+        found.append(PlayerProcess(pid=pid, name=name, exe=exe))
+        seen.add(pid)
     found.sort(key=lambda item: item.pid)
     return found
 
