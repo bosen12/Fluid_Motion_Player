@@ -11,7 +11,6 @@ from fluid_motion.core.gpu import flicker_risk
 RIFE_46 = 46
 RIFE_425 = 425
 RIFE_426 = 426
-MODULUS = 32  # 4.6 / 4.25; 4.26 needs 64 (impl 2 pads internally)
 # Past this RIFE cannot keep up in real time anyway, and every distinct multi
 # compiles and caches its own TensorRT engine. Without a cap, a 12fps clip on
 # the 144 profile asks for 12x and a 240Hz panel on "display" asks for 10x.
@@ -33,6 +32,31 @@ def rife_onnx_name(model: int) -> str:
 def rife_label(model: int) -> str:
     name = rife_onnx_name(model).removeprefix("rife_").removesuffix(".onnx")
     return "RIFE " + name.replace("v", "").replace("_", " ")
+
+
+def rife_modulus(model: int) -> int:
+    """vsmlrt RIFE spatial alignment for impl 1.
+
+    4.25 lite downsamples two extra octaves (128). 4.26 and the 4.25/4.26
+    heavy variants need 64. Everything else, including 4.6 and 4.25, is 32.
+    Impl 2 pads inside the ONNX; this value is still written into the script
+    so the v1 fallback is not stuck on a hardcoded 32.
+    """
+    text = str(int(model))
+    major = int(text[0])
+    tail = text[1:]
+    kind = ""
+    if len(text) >= 4 and text[-1] in "12":
+        kind = "lite" if text[-1] == "1" else "heavy"
+        tail = text[1:-1]
+    minor = int(tail) if tail else 0
+    if (major, minor) >= (4, 26):
+        return 64
+    if (major, minor) == (4, 25) and kind == "lite":
+        return 128
+    if (major, minor) == (4, 25) and kind == "heavy":
+        return 64
+    return 32
 
 
 @dataclass
@@ -161,7 +185,7 @@ RIFE_FORMAT = vs.RGBH
 TRT_FP16 = {bool(params.fp16)}
 TRT_STREAMS = {int(streams)}
 TRT_CUDA_GRAPH = {bool(cuda_graph)}
-MOD = {MODULUS}
+MOD = {rife_modulus(params.model)}
 MULTI = {_py_multi(multi)}
 
 if "video_in" not in globals():
@@ -197,8 +221,8 @@ models_root = os.path.join(MPV_ROOT, "vs-plugins", "models") if MPV_ROOT else ""
 v2 = os.path.join(models_root, "rife_v2", RIFE_ONNX)
 impl = 2 if os.path.isfile(v2) else 1
 
-# Implementation 2 pads internally (SVP path). v1 needs mod-32 with black borders
-# like vsmlrt examples — extra Stack/Flip padding caused a flashing lattice.
+# Implementation 2 pads internally (SVP path). v1 needs the model's vsmlrt
+# modulus with black borders — extra Stack/Flip padding caused a flashing lattice.
 pad_w = pad_h = 0
 if impl == 1:
     pad_w = (-clip.width) % MOD

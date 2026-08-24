@@ -18,6 +18,24 @@ def test_rife_onnx_name_and_label():
     assert "lite" in rife_label(4251)
 
 
+def test_rife_modulus_matches_vsmlrt():
+    from fluid_motion.core.vs_script import rife_modulus
+
+    assert rife_modulus(46) == 32
+    assert rife_modulus(425) == 32
+    assert rife_modulus(426) == 64
+    assert rife_modulus(4251) == 128
+    assert rife_modulus(4252) == 64
+    assert rife_modulus(4262) == 64
+
+
+def test_render_vpy_modulus_follows_model():
+    assert "MOD = 32" in render_vpy(RifeParams(model=425, mpv_root=r"C:\mpv"))
+    assert "MOD = 64" in render_vpy(RifeParams(model=426, mpv_root=r"C:\mpv"))
+    assert "MOD = 128" in render_vpy(RifeParams(model=4251, mpv_root=r"C:\mpv"))
+    assert "MOD = 32" in render_vpy(RifeParams(model=46, mpv_root=r"C:\mpv"))
+
+
 def test_parse_fps_fraction_string():
     assert parse_fps("24000/1001") == Fraction(24000, 1001)
     assert parse_fps("24") == Fraction(24, 1)
