@@ -14,6 +14,12 @@ VSMLRT_TAG = "v15.16"
 GITHUB_VSMLRT = f"https://github.com/AmusementClub/vs-mlrt/releases/download/{VSMLRT_TAG}"
 GITHUB_MODELS = "https://github.com/AmusementClub/vs-mlrt/releases/download/external-models"
 SEVENZR = "https://www.7-zip.org/a/7zr.exe"
+# misc.SCDetect drives the scene-change check every generated .vpy makes, but
+# MiscFilters was split out of the VapourSynth core (it is not in the portable
+# package's vs-coreplugins either), so it has to be fetched separately. 19 KB.
+MISCFILTERS_URL = (
+    "https://github.com/vapoursynth/vs-miscfilters-obsolete/releases/download/R2/miscfilters-r2.7z"
+)
 
 # VapourSynth R70 is pinned deliberately: R79 replaced the flat portable
 # layout with a wheel-only archive, and R70 is the newest release whose
@@ -238,6 +244,25 @@ def install_runtime(mpv_root: Path, cb: Progress | None = None) -> None:
     vsmlrt_src = vs_plugins / "vsmlrt.py"
     if vsmlrt_src.is_file():
         shutil.copy2(vsmlrt_src, mpv_root / "vsmlrt.py")
+
+    # Without this every .vpy fails at load on misc.SCDetect, so the runtime
+    # is not usable even with TensorRT and the models all in place -- which is
+    # exactly what diagnose() reports as "not ready", leaving the user with a
+    # complete 3.5 GB install that refuses to turn on.
+    if not (vs_plugins / "MiscFilters.dll").is_file():
+        misc_arc = cache / "miscfilters-r2.7z"
+        _download(MISCFILTERS_URL, misc_arc, cb, "MiscFilters", (0.57, 0.60))
+        misc_tmp = cache / "miscfilters-extract"
+        _extract(misc_arc, misc_tmp, seven)
+        # The archive keeps win32/ and win64/ side by side; only the 64-bit
+        # build matches the mpv and VapourSynth used here.
+        found = misc_tmp / "win64" / "MiscFilters.dll"
+        if not found.is_file():
+            candidates = [p for p in misc_tmp.rglob("MiscFilters.dll") if "win32" not in p.as_posix()]
+            found = candidates[0] if candidates else found
+        if found.is_file():
+            shutil.copy2(found, vs_plugins / "MiscFilters.dll")
+        shutil.rmtree(misc_tmp, ignore_errors=True)
 
     scripts_arc = cache / f"scripts.{VSMLRT_TAG}.7z"
     _download(f"{GITHUB_VSMLRT}/scripts.{VSMLRT_TAG}.7z", scripts_arc, cb, "vsmlrt.py", (0.62, 0.66))
