@@ -376,8 +376,12 @@ def test_auto_apply_is_silent_user_toggle_announces():
     assert "announce=True" in watcher_src
     assert watcher_src.count("announce=True") == 2, "only the two set_enabled paths announce"
     # The background tick's reconciling apply must stay silent, or mpv shows an
-    # OSD toast every time it quietly catches up on a change.
-    assert "self._apply_to(player.pid, ipc, want_multi, wait=apply_wait)" in watcher_src
+    # OSD toast every time it quietly catches up on a change. Checked on the
+    # call's arguments rather than its exact text, so adding one does not read
+    # as the announce coming back.
+    tick_call = watcher_src.split("self._apply_to(player.pid, ipc, want_multi", 1)
+    assert len(tick_call) == 2, "the tick's apply call moved -- check it still stays silent"
+    assert "announce" not in tick_call[1].split(")", 1)[0]
 
 
 def test_vf_arg_uses_label():
@@ -840,7 +844,7 @@ def _applied_profiles(monkeypatch, engine):
 
     seen: list[str] = []
 
-    def fake_apply(ipc, settings, mpv_root, *, announce=False):
+    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None):
         seen.append(settings.profile)
         ipc.command("vf", "add", "@fluid:vapoursynth")
         return Path(mpv_root) / "shaders" / "fluid_rife.vpy"
@@ -932,7 +936,7 @@ def test_no_op_multiplier_does_not_reapply_forever(monkeypatch, tmp_path):
     monkeypatch.setattr(
         watcher_mod,
         "apply",
-        lambda ipc_, s_, root_, announce=False: calls.append(s_.profile),
+        lambda ipc_, s_, root_, announce=False, info=None: calls.append(s_.profile),
     )
 
     for _ in range(5):
@@ -972,7 +976,7 @@ def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
 
     attempts: list[int] = []
 
-    def failing(ipc_, s_, root_, announce=False):
+    def failing(ipc_, s_, root_, announce=False, info=None):
         attempts.append(1)
         raise IpcError("mpv said no")
 
@@ -1003,7 +1007,7 @@ def test_pipe_closing_apply_is_not_surfaced_as_error(monkeypatch, tmp_path):
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def dying(ipc_, s_, root_, announce=False):
+    def dying(ipc_, s_, root_, announce=False, info=None):
         raise IpcError("無法加入補幀濾鏡：(232, 'WriteFile', '管道正關閉中。')")
 
     monkeypatch.setattr(watcher_mod, "apply", dying)
@@ -1021,7 +1025,7 @@ def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def failing(ipc_, s_, root_, announce=False):
+    def failing(ipc_, s_, root_, announce=False, info=None):
         raise IpcError("mpv said no")
 
     monkeypatch.setattr(watcher_mod, "apply", failing)

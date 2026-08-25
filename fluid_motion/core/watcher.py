@@ -23,6 +23,7 @@ from fluid_motion.core.inject import (
     output_shortfall,
     playback_is_clean,
     player_config_dir,
+    rate_snapshot,
     realtime_label,
     realtime_ratio,
     remove,
@@ -243,7 +244,14 @@ class Engine:
             self._applied.pop(pid, None)
 
     def _apply_to(
-        self, pid: int, ipc: MpvIpc, multi: int, *, announce: bool = False, wait: float = -1
+        self,
+        pid: int,
+        ipc: MpvIpc,
+        multi: int,
+        *,
+        announce: bool = False,
+        wait: float = -1,
+        info: dict[str, Any] | None = None,
     ) -> bool:
         """Apply the current settings to one mpv and record what was applied.
 
@@ -264,7 +272,7 @@ class Engine:
             # standalone mpv at the same time. Falls back to the setting when
             # mpv declines to answer.
             root = player_config_dir(ipc) or Path(self.settings.mpv_root)
-            apply(ipc, self.settings, root, announce=announce)
+            apply(ipc, self.settings, root, announce=announce, info=info)
         except IpcError as exc:
             gone = is_disconnect_error(str(exc))
             if not gone:
@@ -464,7 +472,9 @@ class Engine:
                 stale = applied != self._filter_key(want_multi)
                 missing = want_multi > 1 and not player.interpolation
                 if (stale or missing) and time.monotonic() >= retry_at:
-                    if self._apply_to(player.pid, ipc, want_multi, wait=apply_wait):
+                    # tick() already has a full snapshot for this player; apply()
+                    # reads only the rate fields out of it, which are present.
+                    if self._apply_to(player.pid, ipc, want_multi, wait=apply_wait, info=info):
                         player.interpolation = want_multi > 1
             elif player.interpolation or applied is not None:
                 if self._remove_from(player.pid, ipc, wait=apply_wait):
@@ -516,7 +526,11 @@ class Engine:
                     self._error = ""
                     continue
                 try:
-                    info = snapshot_playback(ipc)
+                    # Only the rate fields: this is on the click path, and the
+                    # full snapshot is fourteen round trips to derive one
+                    # integer. The same reading is handed to apply() so it does
+                    # not immediately repeat the work.
+                    info = rate_snapshot(ipc)
                 except IpcError as exc:
                     self._error = str(exc)
                     continue
@@ -524,7 +538,8 @@ class Engine:
                 # so blocking here for a multi-second apply freezes the window.
                 # Handing off to tick() costs at most one 0.3s tick.
                 self._apply_to(
-                    pid, ipc, resolve_multi(info, self.settings), announce=True, wait=UI_APPLY_WAIT
+                    pid, ipc, resolve_multi(info, self.settings),
+                    announce=True, wait=UI_APPLY_WAIT, info=info,
                 )
             else:
                 self._remove_from(pid, ipc, announce=True, wait=UI_APPLY_WAIT)

@@ -371,6 +371,33 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     }
 
 
+def rate_snapshot(ipc: MpvIpc) -> dict[str, Any]:
+    """Just the fields the multiplier depends on, and nothing else.
+
+    snapshot_playback reads fourteen properties because the UI wants all of
+    them, and each round trip costs real time -- around 15ms while mpv's main
+    thread is busy running the filter, so the full set is roughly 230ms. Both
+    set_enabled and apply() were paying that to work out one integer, twice
+    per settings change, on top of the tick that follows.
+    """
+    def _get(name: str, default: Any = None) -> Any:
+        try:
+            return ipc.get(name)
+        except IpcError:
+            return default
+
+    container = _get("container-fps")
+    estimated = _get("estimated-vf-fps")
+    interpolating = interpolation_active(ipc)
+    source = live_source_fps(container, estimated, interpolating)
+    return {
+        "container_fps": as_fps(container),
+        "fps": source if source is not None else "",
+        "display_fps": as_fps(_get("display-fps")),
+        "interpolation": interpolating,
+    }
+
+
 def resolve_multi(info: dict[str, Any], settings: Settings) -> int:
     """The integer multiplier apply() will actually use for this playback state.
 
@@ -474,8 +501,17 @@ def player_config_dir(ipc: MpvIpc) -> Path | None:
     return path if path.is_dir() else None
 
 
-def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = False) -> Path:
-    info = snapshot_playback(ipc)
+def apply(
+    ipc: MpvIpc,
+    settings: Settings,
+    mpv_root: Path,
+    *,
+    announce: bool = False,
+    info: dict[str, Any] | None = None,
+) -> Path:
+    # The caller has usually just read these; re-reading them costs another
+    # round of IPC for values that cannot have changed in between.
+    info = info if info is not None else rate_snapshot(ipc)
     source = parse_fps(info.get("container_fps") or info.get("fps"))
     display = info.get("display_fps")
     script = script_output_path(mpv_root)
