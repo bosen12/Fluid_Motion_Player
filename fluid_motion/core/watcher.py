@@ -502,6 +502,12 @@ class Engine:
         typically C:\\mpv, which on most machines is an empty path nothing
         uses. Installing there produces a complete, correct runtime that the
         running player never reads.
+
+        Raises when neither source yields somewhere an mpv actually lives:
+        installing ~3.5 GB into a path with no mpv.exe (a bare C:\\mpv that
+        default_mpv_root() fell back to, on a machine whose player lives
+        somewhere else entirely) silently produces a complete runtime that
+        nothing will ever load. Better to say so than to download it.
         """
         with self._lock:
             connections = list(self._ipc.values())
@@ -509,7 +515,13 @@ class Engine:
             root = player_config_dir(ipc)
             if root is not None:
                 return root
-        return Path(self.settings.mpv_root)
+        fallback = Path(self.settings.mpv_root)
+        if not (fallback / "mpv.exe").is_file():
+            raise RuntimeError(
+                f"找不到要安裝的 mpv：{fallback} 沒有 mpv.exe。\n"
+                "請先開啟播放器並開始播放，Fluid Motion 會直接向它問出正確的設定目錄。"
+            )
+        return fallback
 
     def start_bootstrap(self) -> None:
         if self._bootstrapping:
