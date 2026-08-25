@@ -53,13 +53,22 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
         Check("mpv", "mpv", mpv_exe.is_file(), str(mpv_exe) if mpv_exe.is_file() else "找不到 mpv.exe")
     )
 
+    # Two layouts exist in the wild. Repackaged mpv+VapourSynth bundles drop a
+    # root vapoursynth.dll next to mpv.exe; the official portable install
+    # (what install_vapoursynth builds) pip-installs the Python module and
+    # leaves only VSScript.dll at the root. mpv's bridge links against
+    # VSScript in both cases -- verified by running --vf=vapoursynth against
+    # an official mpv build on an official-recipe tree -- so testing only for
+    # vapoursynth.dll reports a perfectly good install as missing.
     vs_dll = root / "vapoursynth.dll"
+    vs_script = root / "VSScript.dll"
+    vs_ok = vs_dll.is_file() or vs_script.is_file()
     checks.append(
         Check(
             "vapoursynth",
             "VapourSynth",
-            vs_dll.is_file(),
-            "便攜包已內建" if vs_dll.is_file() else "mpv 未附帶 vapoursynth.dll",
+            vs_ok,
+            "已就緒" if vs_ok else "mpv 未附帶 VapourSynth（可自動安裝）",
         )
     )
 

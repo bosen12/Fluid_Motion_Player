@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import urllib.request
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -14,12 +15,141 @@ GITHUB_VSMLRT = f"https://github.com/AmusementClub/vs-mlrt/releases/download/{VS
 GITHUB_MODELS = "https://github.com/AmusementClub/vs-mlrt/releases/download/external-models"
 SEVENZR = "https://www.7-zip.org/a/7zr.exe"
 
+# VapourSynth R70 is pinned deliberately: R79 replaced the flat portable
+# layout with a wheel-only archive, and R70 is the newest release whose
+# VSScript.dll placement matches what mpv's bridge expects without extra
+# shuffling. Python 3.12 is what the R70 wheel targets (cp312).
+VS_VERSION = 70
+VS_PORTABLE_URL = (
+    f"https://github.com/vapoursynth/vapoursynth/releases/download/"
+    f"R{VS_VERSION}/VapourSynth64-Portable-R{VS_VERSION}.zip"
+)
+# Tried newest-first; python.org keeps old point releases, so the first hit
+# wins and a pulled build just falls through to the next.
+PYTHON_312 = ("3.12.10", "3.12.9", "3.12.8", "3.12.7")
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
+
 Progress = Callable[[str, float], None]
 
 
 def _progress(cb: Progress | None, message: str, ratio: float) -> None:
     if cb:
         cb(message, max(0.0, min(1.0, ratio)))
+
+
+def _scaled(cb: Progress | None, lo: float, hi: float) -> Progress | None:
+    """Remap a callback's 0..1 range onto lo..hi, so a sub-step can report its
+    own progress without every caller having to know the outer layout."""
+    if cb is None:
+        return None
+
+    def inner(message: str, ratio: float) -> None:
+        cb(message, lo + (hi - lo) * max(0.0, min(1.0, ratio)))
+
+    return inner
+
+
+def vapoursynth_installed(mpv_root: Path) -> bool:
+    """Both layouts count -- see the matching note in runtime.diagnose()."""
+    root = Path(mpv_root)
+    return (root / "VSScript.dll").is_file() or (root / "vapoursynth.dll").is_file()
+
+
+def install_vapoursynth(mpv_root: Path, cb: Progress | None = None) -> None:
+    """Add a portable VapourSynth to an mpv that lacks one.
+
+    Official mpv Windows builds compile the VapourSynth bridge in
+    (`-Dvapoursynth=enabled`) but ship none of its runtime, so `vf=vapoursynth`
+    fails on a stock install -- which is every user who did not hand-assemble
+    their mpv folder. Nothing else here can work without it: the RIFE filter
+    *is* a VapourSynth script.
+
+    This follows upstream's own Install-Portable-VapourSynth-R70.ps1 (embedded
+    CPython + get-pip + the portable archive + the cp312 wheel) rather than
+    copying some prebuilt bundle's layout, and merges it into the mpv root the
+    way mpv+VapourSynth setups are normally arranged. Verified end to end
+    against an official mpv build: `--vf=vapoursynth` loads and passes frames.
+    """
+    root = Path(mpv_root)
+    if vapoursynth_installed(root):
+        _progress(cb, "VapourSynth 已就緒", 1.0)
+        return
+
+    root.mkdir(parents=True, exist_ok=True)
+    cache = download_dir()
+
+    _progress(cb, "準備 VapourSynth…", 0.02)
+    py_zip: Path | None = None
+    for version in PYTHON_312:
+        candidate = cache / f"python-{version}-embed-amd64.zip"
+        url = f"https://www.python.org/ftp/python/{version}/python-{version}-embed-amd64.zip"
+        try:
+            _download(url, candidate, cb, f"Python {version}", (0.02, 0.30))
+        except OSError:
+            continue
+        py_zip = candidate
+        break
+    if py_zip is None:
+        raise RuntimeError("無法下載內嵌 Python 3.12（請檢查網路連線）")
+
+    _progress(cb, "解壓內嵌 Python…", 0.32)
+    with zipfile.ZipFile(py_zip) as archive:
+        archive.extractall(root)
+
+    # The embedded distribution ships site-packages disabled and no search
+    # path beyond its own zip; pip needs `import site`, and the freshly
+    # installed vapoursynth module needs Lib\site-packages on the path.
+    pth = root / "python312._pth"
+    if pth.is_file():
+        text = pth.read_text(encoding="utf-8", errors="replace")
+        text = text.replace("#import site", "import site")
+        for entry in ("vs-scripts", "Lib\\site-packages"):
+            if entry not in text:
+                text = text.rstrip("\n") + f"\n{entry}\n"
+        pth.write_text(text, encoding="utf-8")
+    (root / "vs-plugins").mkdir(exist_ok=True)
+    (root / "vs-scripts").mkdir(exist_ok=True)
+
+    _progress(cb, "安裝 pip…", 0.36)
+    get_pip = cache / "get-pip.py"
+    _download(GET_PIP_URL, get_pip, cb, "get-pip", (0.36, 0.42))
+    python_exe = root / "python.exe"
+    result = run_hidden([str(python_exe), str(get_pip), "--no-warn-script-location"], timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "pip 安裝失敗").strip()[-400:])
+    # Console entry points are useless here and only add clutter next to mpv.
+    scripts_dir = root / "Scripts"
+    if scripts_dir.is_dir():
+        for exe in scripts_dir.glob("*.exe"):
+            exe.unlink(missing_ok=True)
+
+    _progress(cb, "下載 VapourSynth…", 0.44)
+    vs_zip = cache / f"VapourSynth64-Portable-R{VS_VERSION}.zip"
+    _download(VS_PORTABLE_URL, vs_zip, cb, f"VapourSynth R{VS_VERSION}", (0.44, 0.80))
+
+    _progress(cb, "解壓 VapourSynth…", 0.82)
+    with zipfile.ZipFile(vs_zip) as archive:
+        for name in archive.namelist():
+            # docs and the C SDK are most of the archive and nothing reads
+            # them from an mpv folder.
+            if name.startswith(("doc/", "sdk/")):
+                continue
+            archive.extract(name, root)
+    # Ships alongside the 3.12 build for people pinned to Python 3.8; keeping
+    # it next to mpv only invites loading the wrong one.
+    (root / "VSScriptPython38.dll").unlink(missing_ok=True)
+
+    _progress(cb, "安裝 VapourSynth 模組…", 0.88)
+    wheels = sorted((root / "wheel").glob("VapourSynth-*cp312*.whl")) if (root / "wheel").is_dir() else []
+    if not wheels:
+        raise RuntimeError("VapourSynth 套件包裡找不到 cp312 wheel")
+    result = run_hidden([str(python_exe), "-m", "pip", "install", str(wheels[0])], timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "VapourSynth 安裝失敗").strip()[-400:])
+
+    if not vapoursynth_installed(root):
+        raise RuntimeError("VapourSynth 安裝後仍找不到 VSScript.dll")
+    _progress(cb, "VapourSynth 安裝完成", 1.0)
 
 
 def _download(url: str, dest: Path, cb: Progress | None, label: str, span: tuple[float, float]) -> None:
@@ -70,8 +200,15 @@ def _extract(archive: Path, out_dir: Path, seven: Path, extra_args: list[str] | 
 
 
 def install_runtime(mpv_root: Path, cb: Progress | None = None) -> None:
-    """Download vs-mlrt TensorRT + RIFE 4.6 into the portable mpv tree."""
+    """Download VapourSynth (if absent) + vs-mlrt TensorRT + RIFE into the mpv tree."""
     mpv_root = Path(mpv_root)
+
+    # First, because everything below is a VapourSynth plugin or a script for
+    # it -- installing TensorRT into an mpv that cannot load .vpy at all just
+    # produces a 2.6 GB download and a filter that never applies.
+    install_vapoursynth(mpv_root, _scaled(cb, 0.0, 0.18))
+    cb = _scaled(cb, 0.18, 1.0)
+
     vs_plugins = mpv_root / "vs-plugins"
     vs_plugins.mkdir(parents=True, exist_ok=True)
     cache = download_dir()
