@@ -132,6 +132,10 @@ def interpolation_held_off(
 REALTIME_SMOOTHING = 0.35
 # Below this the pipeline is not delivering realtime playback.
 REALTIME_SHORTFALL = 0.97
+# Share of the target frames that may be thrown away before playback stops
+# looking smooth. Measured on real content: a comfortable setting discards
+# 0.0-0.3% and looks clean, while one that visibly stutters discards ~10%.
+DROP_LIMIT = 0.01
 
 
 def realtime_ratio(
@@ -173,6 +177,46 @@ def realtime_label(ratio: float | None) -> str:
     if ratio is None:
         return "—"
     return f"{min(ratio, 1.0):.2f}×"
+
+
+def drop_ratio(
+    delta_drops: float,
+    delta_wall: float,
+    target_fps: float | None,
+    previous: float | None = None,
+    smoothing: float = REALTIME_SMOOTHING,
+) -> float | None:
+    """Share of the target frames mpv threw away rather than present.
+
+    Realtime playback is not the same as smooth playback: when the filter
+    cannot keep up, mpv can hold the clock by discarding frames instead of
+    slowing down, so realtime_ratio reads a healthy 1.00 while the picture
+    visibly stutters. Measured on real content at 120fps, that is exactly what
+    happened -- 1.00x while discarding 9.6% of frames -- and the readout
+    called it fine. This is the other half of that question.
+
+    Returns None when the sample cannot say anything: no elapsed time, no
+    known target, or a counter that went backwards (a new file resets it).
+    """
+    if delta_wall <= 0 or not target_fps or target_fps <= 0:
+        return None
+    if delta_drops < 0:
+        return None
+    ratio = (delta_drops / delta_wall) / target_fps
+    if previous is None:
+        return ratio
+    return previous + (ratio - previous) * smoothing
+
+
+def playback_is_clean(ratio: float | None, drops: float | None) -> bool | None:
+    """Both halves have to hold: realtime *and* not paid for by dropping frames."""
+    if ratio is None:
+        return None
+    if ratio < REALTIME_SHORTFALL:
+        return False
+    if drops is not None and drops >= DROP_LIMIT:
+        return False
+    return True
 
 
 def as_fps(value: Any) -> float | None:
@@ -271,6 +315,7 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     seeking = bool(_get("seeking") or False)
     time_pos = _get("time-pos")
     speed = _get("speed")
+    drops = _get("frame-drop-count")
     interpolating = interpolation_active(ipc)
     source = live_source_fps(container, estimated, interpolating)
     return {
@@ -288,6 +333,7 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
         "interpolation": interpolating,
         "time_pos": float(time_pos) if isinstance(time_pos, (int, float)) else None,
         "speed": float(speed) if isinstance(speed, (int, float)) and speed > 0 else 1.0,
+        "drops": float(drops) if isinstance(drops, (int, float)) else None,
         "vf": current_filters(ipc),
     }
 

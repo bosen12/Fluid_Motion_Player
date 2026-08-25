@@ -168,6 +168,12 @@ function renderRealtime(player, connected, compiling, settling) {
   if (!stat || !bar || !note) return;
 
   const ratio = player && typeof player.realtime === "number" ? player.realtime : null;
+  const drops = player && typeof player.drop_rate === "number" ? player.drop_rate : null;
+  // Keeping the clock is not the same as keeping the picture: mpv can hold
+  // realtime by discarding frames, which reads as a healthy 1.00 while the
+  // playback visibly stutters. Measured at 120fps on real content, that was
+  // 1.00x with 9.6% of frames thrown away.
+  const dropping = drops !== null && drops >= 0.01;
   const measuring = connected > 0 && player && !player.paused;
 
   if (!connected) {
@@ -190,13 +196,19 @@ function renderRealtime(player, connected, compiling, settling) {
     const shown = Math.min(ratio, 1);
     stat.textContent = `${shown.toFixed(2)}×`;
     bar.style.width = `${Math.max(0, Math.min(1, shown)) * 100}%`;
-    note.textContent =
-      shown >= 0.97
-        ? "跟得上實時播放。"
-        : `跟不上:只有 ${Math.round(shown * 100)}% 的實時速度。試試降低目標幀率、換較輕的模型,或關閉補幀。`;
+    if (shown < 0.97) {
+      note.textContent = `跟不上:只有 ${Math.round(shown * 100)}% 的實時速度。試試降低目標幀率、換較輕的模型,或關閉補幀。`;
+    } else if (dropping) {
+      // Realtime held by discarding frames. The rate looks perfect and the
+      // picture stutters anyway, so this has to read as a problem.
+      note.textContent = `維持實時,但正在丟棄 ${(drops * 100).toFixed(1)}% 的影格 —— 畫面會頓。試試降低目標幀率或換較輕的模型。`;
+    } else {
+      note.textContent = "跟得上實時播放。";
+    }
   }
 
-  const bad = measuring && ratio !== null && !settling && !compiling && ratio < 0.97;
+  const bad =
+    measuring && ratio !== null && !settling && !compiling && (ratio < 0.97 || dropping);
   stat.classList.toggle("is-bad", Boolean(bad));
   bar.classList.toggle("is-bad", Boolean(bad));
 }

@@ -658,6 +658,53 @@ def test_realtime_ratio_smooths_towards_new_samples():
     assert realtime_ratio(0.4, 1.0, previous=None) == pytest.approx(0.4)
 
 
+def test_drop_ratio_measures_share_of_target_frames():
+    from fluid_motion.core.inject import drop_ratio
+
+    # 12 frames discarded in a second against a 120fps target = 10%.
+    assert drop_ratio(12, 1.0, 120) == pytest.approx(0.10)
+    assert drop_ratio(0, 1.0, 120) == pytest.approx(0.0)
+    # Nothing to say without elapsed time, a target, or with a reset counter.
+    assert drop_ratio(5, 0.0, 120) is None
+    assert drop_ratio(5, 1.0, None) is None
+    assert drop_ratio(5, 1.0, 0) is None
+    assert drop_ratio(-30, 1.0, 120) is None
+    # Smoothed like the realtime figure, for the same reason.
+    assert drop_ratio(12, 1.0, 120, previous=0.0, smoothing=0.5) == pytest.approx(0.05)
+
+
+def test_realtime_alone_must_not_certify_smooth_playback():
+    """The four cases measured on the real file, including the one that lied.
+
+    Reporting realtime without drops called a visibly stuttering 120fps
+    setting "keeps up", because mpv was holding the clock by discarding
+    9.6% of frames. That case has to come out false.
+    """
+    from fluid_motion.core.inject import playback_is_clean
+
+    # profile 3x, serial and parallel: realtime and essentially nothing lost.
+    assert playback_is_clean(1.00, 0.003) is True
+    assert playback_is_clean(1.00, 0.000) is True
+    # profile 120 serial: simply too slow.
+    assert playback_is_clean(0.79, 0.776) is False
+    # profile 120 parallel: the one that used to read as healthy.
+    assert playback_is_clean(1.00, 0.096) is False
+
+    # Drops unknown falls back to the rate alone rather than guessing.
+    assert playback_is_clean(1.00, None) is True
+    assert playback_is_clean(0.60, None) is False
+    assert playback_is_clean(None, 0.0) is None
+
+
+def test_ui_flags_dropping_frames_as_a_problem():
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    body = js.split("function renderRealtime(", 1)[1].split("\nfunction ", 1)[0]
+    assert "drop_rate" in body
+    # The bad state must be reachable from drops, not only from a low rate.
+    bad_line = [l for l in body.splitlines() if "const bad" in l or "ratio < 0.97 || dropping" in l]
+    assert any("dropping" in l for l in bad_line), "drops must be able to raise the bad state"
+
+
 def test_realtime_label_never_claims_headroom():
     from fluid_motion.core.inject import realtime_label
 

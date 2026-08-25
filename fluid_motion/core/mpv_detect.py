@@ -39,6 +39,10 @@ class PlayerProcess:
     # usable samples exist. Saturates at 1.0 -- see inject.realtime_ratio.
     realtime: float | None = None
     realtime_label: str = "—"
+    # Share of target frames mpv discarded rather than present. Realtime can
+    # be held by dropping frames, so this is the other half of "is it smooth".
+    drop_rate: float | None = None
+    playback_clean: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -16,10 +16,12 @@ from fluid_motion.core.inject import (
     apply,
     interpolation_held_off,
     is_settling,
+    drop_ratio,
     live_fps_label,
     live_source_fps,
     measured_output_fps,
     output_shortfall,
+    playback_is_clean,
     player_config_dir,
     realtime_label,
     realtime_ratio,
@@ -93,11 +95,13 @@ class Engine:
         # is what makes the next tick pick the change back up.
         self._applied: dict[int, tuple] = {}
         self._retry_at: dict[int, float] = {}
-        # Per-pid (time-pos, monotonic) of the last usable sample, plus the
-        # smoothed ratio built from them. Realtime speed can only be had by
-        # differencing two observations, so it has to be carried across ticks.
-        self._realtime_seen: dict[int, tuple[float, float]] = {}
+        # Per-pid (time-pos, drop-count, monotonic) of the last usable sample,
+        # plus the smoothed ratios built from them. Both speed and drop rate
+        # can only be had by differencing two observations, so they have to be
+        # carried across ticks.
+        self._realtime_seen: dict[int, tuple[float, float, float]] = {}
         self._realtime: dict[int, float] = {}
+        self._drops: dict[int, float] = {}
         self._in_hotkey = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -169,30 +173,43 @@ class Engine:
     def _mark_settling(self) -> None:
         self._settling_until = time.monotonic() + SETTLE_SECONDS
 
-    def _update_realtime(self, pid: int, info: dict[str, Any]) -> None:
-        """Difference this tick's time-pos against the last to get playback speed.
+    def _update_realtime(self, pid: int, info: dict[str, Any], target_fps: float | None) -> None:
+        """Difference this tick's samples against the last to get speed and drops.
 
         Paused and seeking players are dropped rather than sampled: neither
         advances time-pos for a reason that says anything about whether the
         pipeline can keep up, and feeding either in would read as a stall.
+
+        Drops are tracked alongside because realtime alone does not mean
+        smooth -- mpv can hold the clock by discarding frames, and that reads
+        as a perfectly healthy 1.00 while the picture stutters.
         """
         pos = info.get("time_pos")
         if info.get("paused") or info.get("seeking") or pos is None:
             self._realtime_seen.pop(pid, None)
             return
         now = time.monotonic()
+        drops = info.get("drops")
+        drops = float(drops) if isinstance(drops, (int, float)) else 0.0
         last = self._realtime_seen.get(pid)
-        self._realtime_seen[pid] = (float(pos), now)
+        self._realtime_seen[pid] = (float(pos), drops, now)
         if last is None:
             return
+        last_pos, last_drops, last_at = last
+        elapsed = now - last_at
         ratio = realtime_ratio(
-            float(pos) - last[0],
-            now - last[1],
+            float(pos) - last_pos,
+            elapsed,
             speed=float(info.get("speed") or 1.0),
             previous=self._realtime.get(pid),
         )
         if ratio is not None:
             self._realtime[pid] = ratio
+        dropped = drop_ratio(
+            drops - last_drops, elapsed, target_fps, previous=self._drops.get(pid)
+        )
+        if dropped is not None:
+            self._drops[pid] = dropped
 
     def _filter_key(self, multi: int) -> tuple:
         """Everything that changes the generated .vpy, plus the resolved multi.
@@ -414,9 +431,14 @@ class Engine:
             else:
                 player.output_fps = ""
                 player.estimated_vfps = ""
-            self._update_realtime(player.pid, info)
+            # Drops are only meaningful against the rate that was being aimed
+            # for, so this runs after `target` is known. Without a filter the
+            # target is just the source rate.
+            self._update_realtime(player.pid, info, target if player.interpolation else src)
             player.realtime = self._realtime.get(player.pid)
             player.realtime_label = realtime_label(player.realtime)
+            player.drop_rate = self._drops.get(player.pid)
+            player.playback_clean = playback_is_clean(player.realtime, player.drop_rate)
             live[player.pid] = ipc
             seeking = bool(info.get("seeking"))
             held = self._held_off(seeking)
@@ -457,6 +479,8 @@ class Engine:
                 self._realtime.pop(pid, None)
             for pid in [p for p in self._realtime_seen if p not in live]:
                 self._realtime_seen.pop(pid, None)
+            for pid in [p for p in self._drops if p not in live]:
+                self._drops.pop(pid, None)
             if not live:
                 self._error = ""
         cache = engine_cache_info()
