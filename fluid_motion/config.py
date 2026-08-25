@@ -8,7 +8,14 @@ from typing import Any
 from fluid_motion.paths import config_path, default_mpv_root
 
 
-PROFILES = ("2x", "3x", "60", "120", "144", "display")
+# "60" used to sit where "4x" is now. As a target frame rate it collapsed onto
+# 2x for every common source -- 60/24, 60/25 and 60/30 all round to 2 -- so it
+# offered nothing 2x did not, and it was inconsistent while doing it: 23.976fps
+# rounded to 3x while 24fps rounded to 2x, giving two visually identical
+# sources different treatment under one menu entry. 4x is a fixed multiplier
+# like 2x and 3x, so it behaves the same whatever the source, and it fills the
+# real gap in the list between 3x and the 5x that "120" asks for.
+PROFILES = ("2x", "3x", "4x", "120", "144", "display")
 RIFE_MODELS = (426, 425, 46)
 # 4251 (4.25 lite) is not offered: vsmlrt TensorRT on RTX 50 copies frame n
 # instead of interpolating, which reads as a flashing green/wrong picture.
@@ -36,6 +43,10 @@ class Settings:
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         settings = cls(**known)
         if settings.profile not in PROFILES:
+            # Also the migration path for the retired "60", and 2x is where it
+            # lands correctly rather than by accident: 60 as a target rounded
+            # to 2x on every common source anyway, so anyone who had it keeps
+            # the interpolation they were actually getting.
             settings.profile = "2x"
         try:
             settings.rife_model = int(settings.rife_model)

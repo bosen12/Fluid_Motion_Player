@@ -1,7 +1,7 @@
 const PROFILES = [
   { id: "2x", label: "2×" },
   { id: "3x", label: "3×" },
-  { id: "60", label: "60" },
+  { id: "4x", label: "4×" },
   { id: "120", label: "120" },
   { id: "144", label: "144" },
   { id: "display", label: "螢幕" },

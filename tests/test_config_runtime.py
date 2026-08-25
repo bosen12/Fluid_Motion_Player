@@ -261,6 +261,43 @@ def test_force_accel_is_pinned_off_on_load(tmp_path: Path):
     assert Settings().force_accel is False
 
 
+def test_4x_is_a_fixed_multiplier_on_every_source():
+    """Unlike the "60" it replaced, which changed meaning with the source.
+
+    60 as a target divided into the source rate and rounded, so 23.976fps got
+    3x while 24fps got 2x -- two sources nobody can tell apart, treated
+    differently under one menu entry. A fixed multiplier cannot do that.
+    """
+    from fluid_motion.core.vs_script import parse_fps, target_multi
+
+    for fps in (23.976, 24, 25, 30, 60):
+        multi, _ = target_multi("4x", parse_fps(fps), 165.0)
+        assert multi == 4, f"4x must stay 4x at {fps}fps, got {multi}"
+
+
+def test_retired_60_profile_migrates_to_what_it_actually_did():
+    from fluid_motion.config import PROFILES
+    from fluid_motion.core.vs_script import parse_fps, target_multi
+
+    assert "60" not in PROFILES
+    assert "4x" in PROFILES
+    # 2x is where it belongs: 60 rounded to 2x on every common source anyway.
+    assert Settings.from_dict({"profile": "60"}).profile == "2x"
+    for fps in (24, 25, 30):
+        assert target_multi("60", parse_fps(fps), 165.0)[0] == 2
+
+
+def test_profile_list_has_no_gap_between_3x_and_120():
+    """The list used to jump 3x -> 5x, straddling where a machine's limit sits."""
+    from fluid_motion.config import PROFILES
+    from fluid_motion.core.vs_script import parse_fps, target_multi
+
+    src = parse_fps(23.976)
+    multis = sorted({target_multi(p, src, 165.0)[0] for p in PROFILES})
+    for lo, hi in zip(multis, multis[1:]):
+        assert hi - lo == 1, f"gap between {lo}x and {hi}x"
+
+
 def test_invalid_profile_falls_back():
     settings = Settings.from_dict({"profile": "nope"})
     assert settings.profile == "2x"
@@ -878,7 +915,7 @@ def test_rapid_setting_changes_converge_on_the_last_one(monkeypatch, tmp_path):
 
     # Every one of these fails at the IPC layer except the last.
     monkeypatch.setattr(engine, "_held_off", lambda seeking=False: True)
-    for profile in ("3x", "60", "144"):
+    for profile in ("3x", "4x", "144"):
         engine.update_settings(profile=profile)
     assert seen == [], "all four applies were skipped"
 

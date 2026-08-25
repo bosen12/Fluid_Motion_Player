@@ -108,6 +108,8 @@ def target_multi(profile: str, source_fps: Fraction | None, display_fps: float |
     speedup at all — so any target is always rounded to the nearest usable
     integer instead of passed through as-is.
     """
+    if profile == "4x":
+        return 4, False
     if profile == "3x":
         return 3, False
     if profile == "2x":
