@@ -431,35 +431,15 @@ def test_lua_f3_does_not_inject_vf():
     assert "alive" in lua
 
 
-def test_interpolation_held_off_tracks_the_hold_file_not_seeking():
+def test_interpolation_held_off_during_seek_and_hold_file():
     from fluid_motion.core.inject import interpolation_held_off
 
-    # A bare seek no longer removes the filter. Only lua writes the hold file,
-    # and it only does so for a drag -- so seeking alone must not hold off, or
-    # every keypress would pay a teardown again.
-    assert interpolation_held_off(seeking=True, hold_age=None) is False
+    assert interpolation_held_off(seeking=True, hold_age=None) is True
     assert interpolation_held_off(seeking=False, hold_age=0.1) is True
     assert interpolation_held_off(seeking=False, hold_age=0.0) is True
     assert interpolation_held_off(seeking=False, hold_age=3.0) is False
     assert interpolation_held_off(seeking=False, hold_age=None) is False
     assert interpolation_held_off(seeking=False, hold_age=-0.1) is False
-
-
-def test_apply_deferred_pauses_applies_without_removing():
-    from fluid_motion.core.inject import apply_deferred, interpolation_held_off
-
-    # Mid-seek: applies wait, but nothing is removed -- the two gates differ
-    # precisely here, and that difference is what keeps a single seek cheap.
-    assert apply_deferred(seeking=True, hold_age=None) is True
-    assert interpolation_held_off(seeking=True, hold_age=None) is False
-
-    # A drag holds both gates: the filter comes off and stays off.
-    assert apply_deferred(seeking=False, hold_age=0.1) is True
-    assert interpolation_held_off(seeking=False, hold_age=0.1) is True
-
-    # Settled: neither gate is closed.
-    assert apply_deferred(seeking=False, hold_age=None) is False
-    assert apply_deferred(seeking=False, hold_age=3.0) is False
 
 
 def test_lua_strips_vf_on_seek_without_readding():
@@ -474,26 +454,42 @@ def test_lua_strips_vf_on_seek_without_readding():
     assert 'vf", "remove", "@fluid"' in lua
 
 
-def test_lua_only_tears_down_for_a_drag():
-    """The teardown must be gated, and gated on one signal source only.
+def test_lua_drops_the_filter_on_every_seek():
+    """Unconditional, not gated on the seek looking like a drag.
 
-    Both `seek` and the `seeking` property fire for the same seek, microseconds
-    apart. If both fed the drag detector, every single seek would look like a
-    drag against itself and the gate would be worthless -- so the property
-    observer must not call on_seek().
+    Gating it was measured and reverted: total time to interpolating is the
+    same either way, but time to a *picture* is not -- 0.14s when the filter
+    is dropped first against 0.34s when it has to rebuild in the chain, which
+    is what makes a gated seek feel sluggish.
     """
     from fluid_motion.paths import resources_dir
 
     lua = (resources_dir() / "zz-fluid-ipc.lua").read_text(encoding="utf-8")
-    assert "SCRUB_WINDOW" in lua
-    assert "last_seek_at" in lua
-    # The seek event is the only thing allowed to run drag detection.
-    assert 'register_event("seek", on_seek)' in lua
-    observer = lua.split('observe_property("seeking"', 1)[1]
-    assert "on_seek()" not in observer.split("end)", 1)[0]
-    # And the teardown itself is behind the drag test, not called outright.
-    body = lua.split("local function on_seek()", 1)[1].split("\nend", 1)[0]
-    assert "dragging" in body and "begin_seek_hold()" in body
+    assert "SCRUB_WINDOW" not in lua
+    assert "last_seek_at" not in lua    # the drag detector's state
+    assert "local function on_seek" not in lua
+    for hook in ('register_event("seek"', 'observe_property("seeking"'):
+        assert hook in lua
+    # Both paths reach the teardown with no condition of their own in between.
+    seek_body = lua.split('register_event("seek"', 1)[1].split("end)", 1)[0]
+    assert "begin_seek_hold()" in seek_body
+    assert "if" not in seek_body
+
+
+def test_watcher_loop_keeps_a_plain_cadence():
+    """No early wake on the seek hold clearing -- it was measured, not assumed.
+
+    Cutting the wait short sounded free, but against the plain cadence the
+    median time for interpolation to return went 0.71s -> 0.84s with a wider
+    spread: the tick it saves is small next to the variance in rebuilding the
+    VapourSynth script. The extra cross-thread signal bought nothing.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
+    assert "_wake" not in src
+    loop = src.split("def _loop", 1)[1].split("def ", 1)[0]
+    assert "self._stop.wait(TICK_SECONDS)" in loop
 
 
 def test_titlebar_has_pywebview_drag_region():

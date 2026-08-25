@@ -14,19 +14,21 @@ local SEEK_RESUME = 0.15
 local seek_timer
 local seek_held = false
 
--- A lone seek is not worth tearing the filter down for. mpv reinitialises the
--- whole VapourSynth script on any seek whether or not the filter is ours to
--- remove, so dropping it buys nothing (measured: 0.69s to remove, seek and
--- re-add versus 0.71s to leave it loaded) while adding SEEK_RESUME plus the
--- tray app's poll interval on top -- 0.2-0.45s of stall that only exists
--- because we reached for the filter.
+-- The filter comes off for *every* seek, not just a drag.
 --
--- Dragging the timeline is the case that does need it gone: every scrub
--- position would otherwise pay a full VS reinit and the drag stops tracking
--- the cursor. So the teardown stays, gated on a second seek landing close
--- behind the first, which is what a drag looks like and a keypress does not.
-local SCRUB_WINDOW = 0.5
-local last_seek_at = -1e9
+-- An earlier version gated this on a second seek landing close behind the
+-- first, on the reasoning that mpv reinitialises the VapourSynth script for
+-- any seek anyway, so removing it first buys nothing. Total time to
+-- interpolating does bear that out -- 0.69s to remove, seek and re-add versus
+-- 0.71s to leave it loaded. But that is not the number anyone feels. What
+-- gets felt is how long a seek takes to put a picture on screen, and there the
+-- two are nothing alike: seeking with no VapourSynth in the chain shows a
+-- picture in 0.14s, against 0.34s when the filter has to rebuild first.
+--
+-- Being 2.4x slower to respond is worse than a brief spell at source frame
+-- rate, so the teardown is unconditional and the cost it used to carry -- the
+-- wait before re-applying -- is addressed in the tray app instead, which now
+-- wakes on the hold clearing rather than on its next poll.
 
 local function fluid_on()
   local vf = mp.get_property("vf") or ""
@@ -141,36 +143,18 @@ local function arm_resume()
   end)
 end
 
--- Drop the filter only once this looks like a drag: a second seek arriving
--- within SCRUB_WINDOW of the last one, or a hold that is already open and
--- has not been resumed yet. A single seek falls through and leaves the
--- filter alone, so mpv reinitialises it once and nothing waits on us.
-local function on_seek()
-  local now = mp.get_time()
-  local dragging = (now - last_seek_at) < SCRUB_WINDOW
-  last_seek_at = now
-  if dragging or seek_held then
-    begin_seek_hold()
-  end
-end
-
 mp.add_timeout(0, strip_stale)
 mp.register_event("start-file", strip_stale)
 mp.register_event("file-loaded", strip_stale)
--- Drag detection reads the `seek` event only. The `seeking` property flips
--- true for the same seek microseconds later, and letting both feed on_seek()
--- would make every single seek look like a drag against itself. The property
--- observer's job here is just to keep an already-open hold from expiring
--- while the drag is still going.
-mp.register_event("seek", on_seek)
+mp.register_event("seek", function()
+  begin_seek_hold()
+end)
 mp.register_event("playback-restart", function()
   arm_resume()
 end)
 mp.observe_property("seeking", "bool", function(_, seeking)
   if seeking then
-    if seek_held then
-      begin_seek_hold()
-    end
+    begin_seek_hold()
   else
     arm_resume()
   end

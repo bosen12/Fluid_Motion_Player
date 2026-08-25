@@ -118,27 +118,12 @@ def interpolation_held_off(
     hold_age: float | None,
     max_age: float = SEEK_HOLD_MAX_AGE,
 ) -> bool:
-    """True while the filter must come off: lua saw a drag and wrote the file.
-
-    `seeking` deliberately does not force this any more. The lua side is the
-    only thing that can tell a drag from a single seek, and it drops the
-    filter itself for a drag; tearing down here on any seek as well would
-    undo that and put the teardown back on every keypress.
-    """
+    """True while mpv is seeking or lua still has the post-seek quiet file."""
+    if seeking:
+        return True
     if hold_age is None:
         return False
     return 0 <= hold_age < max_age
-
-
-def apply_deferred(seeking: bool, hold_age: float | None, max_age: float = SEEK_HOLD_MAX_AGE) -> bool:
-    """True while a fresh apply should wait, without disturbing what is loaded.
-
-    A single seek no longer drops the filter, but pushing a vf add into an
-    mpv that is mid-seek is still wasted work -- it lands on a pipeline that
-    is about to be rebuilt anyway. So applies pause during any seek, while
-    only a drag actually removes anything.
-    """
-    return bool(seeking) or interpolation_held_off(seeking, hold_age, max_age)
 
 
 # How much a new realtime sample is allowed to move the running figure. The
