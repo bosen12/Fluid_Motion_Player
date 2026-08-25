@@ -248,6 +248,76 @@ def resolve_multi(info: dict[str, Any], settings: Settings) -> int:
     return int(multi)
 
 
+# hwdec modes whose frames already land in system memory. VapourSynth is a
+# CPU-side filter, so a GPU-resident frame (plain "auto", "auto-safe",
+# "d3d11va", "nvdec", ...) cannot be fed to it and the filter fails to load.
+# Copy-back modes and software decoding are both fine.
+_PREV_HWDEC: dict[str, str] = {}
+_COPYBACK_HWDEC = "auto-copy"
+
+
+def _hwdec_text(value: Any) -> str:
+    """hwdec is a *priority list* option, so mpv hands it back as a list.
+
+    str() on that yields "['auto-safe']", which is neither a valid value to
+    set back nor something the suffix test below can read -- it has to be
+    flattened to mpv's own comma-separated form first.
+    """
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    return str(value or "")
+
+
+def _hwdec_is_copyback(value: Any) -> bool:
+    text = _hwdec_text(value).strip().lower()
+    if text in ("", "no"):
+        return True
+    # Every entry has to be safe: mpv walks the list and uses the first one
+    # that works, so a single GPU-resident mode in there can still be chosen.
+    entries = [part.strip() for part in text.split(",") if part.strip()]
+    return bool(entries) and all(
+        entry == "no" or entry.endswith("-copy") or entry.endswith("-copy-safe")
+        for entry in entries
+    )
+
+
+def ensure_copyback_hwdec(ipc: MpvIpc) -> None:
+    """Switch the player to copy-back decoding for as long as RIFE is loaded.
+
+    Previously this was left entirely to the user's mpv.conf ("hwdec=auto-copy"
+    in the README) and nothing checked it: a player configured for
+    GPU-resident decoding -- AX Player ships hwdec=auto-safe, and it is the
+    mpv default in many configs -- would install everything correctly and then
+    silently fail to interpolate, with no message saying why.
+
+    Doing it over IPC rather than rewriting someone's mpv.conf keeps the cost
+    where it belongs: copy-back's GPU->CPU transfer is only paid while
+    interpolation is actually on, and normal playback is left alone.
+    """
+    try:
+        current = ipc.get("hwdec")
+    except IpcError:
+        return
+    if _hwdec_is_copyback(current):
+        return
+    try:
+        ipc.set("hwdec", _COPYBACK_HWDEC)
+    except IpcError:
+        return
+    _PREV_HWDEC[ipc.path] = _hwdec_text(current)
+
+
+def restore_hwdec(ipc: MpvIpc) -> None:
+    """Put back whatever decoding mode the player had before we changed it."""
+    previous = _PREV_HWDEC.pop(ipc.path, None)
+    if previous is None:
+        return
+    try:
+        ipc.set("hwdec", previous)
+    except IpcError:
+        pass
+
+
 def player_config_dir(ipc: MpvIpc) -> Path | None:
     """Where this specific player keeps its mpv config, straight from mpv.
 
@@ -293,6 +363,9 @@ def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = F
     if float(multi) <= 1.0:
         remove(ipc)
         return script
+    # Before the filter goes on: VapourSynth cannot read GPU-resident frames,
+    # so a player left on plain auto/auto-safe would reject it.
+    ensure_copyback_hwdec(ipc)
     _strip_other_vapoursynth(ipc)
     vf = current_filters(ipc)
     if FILTER_LABEL in vf or vf_is_fluid(vf):
@@ -340,6 +413,8 @@ def remove(ipc: MpvIpc, *, announce: bool = False) -> None:
             ipc.command("vf", "remove", f"@{label}" if label else "vapoursynth")
         except IpcError:
             continue
+    # The filter is gone, so copy-back's GPU->CPU transfer is pure cost now.
+    restore_hwdec(ipc)
     if announce:
         try:
             ipc.command("show-text", "Fluid Motion  off", 1200)
