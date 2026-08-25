@@ -14,6 +14,7 @@ from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
     SETTLE_SECONDS,
     apply,
+    apply_deferred,
     interpolation_held_off,
     is_settling,
     live_fps_label,
@@ -155,6 +156,9 @@ class Engine:
 
     def _held_off(self, seeking: bool = False) -> bool:
         return interpolation_held_off(seeking, self._seek_hold_age())
+
+    def _apply_deferred(self, seeking: bool = False) -> bool:
+        return apply_deferred(seeking, self._seek_hold_age())
 
     def _mark_settling(self) -> None:
         self._settling_until = time.monotonic() + SETTLE_SECONDS
@@ -374,7 +378,8 @@ class Engine:
                 player.output_fps = ""
                 player.estimated_vfps = ""
             live[player.pid] = ipc
-            held = self._held_off(bool(info.get("seeking")))
+            seeking = bool(info.get("seeking"))
+            held = self._held_off(seeking)
             want_multi = resolve_multi(info, self.settings)
             with self._lock:
                 applied = self._applied.get(player.pid)
@@ -388,6 +393,12 @@ class Engine:
                         player.interpolation = False
                 else:
                     self._invalidate(player.pid)
+            elif self._apply_deferred(seeking):
+                # Mid-seek with no drag in progress: the filter stays exactly as
+                # it is. Nothing is torn down and nothing is pushed -- mpv is
+                # already rebuilding the VapourSynth script for this seek, and a
+                # vf add aimed at that pipeline would only be thrown away.
+                pass
             elif self.settings.enabled and self._runtime.ready:
                 # Stale settings, not just a missing filter. multi <= 1 is a
                 # legitimately applied no-op (nothing left to interpolate), so it

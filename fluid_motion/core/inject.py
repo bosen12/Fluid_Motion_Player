@@ -118,12 +118,27 @@ def interpolation_held_off(
     hold_age: float | None,
     max_age: float = SEEK_HOLD_MAX_AGE,
 ) -> bool:
-    """True while mpv is seeking or lua still has the post-seek quiet file."""
-    if seeking:
-        return True
+    """True while the filter must come off: lua saw a drag and wrote the file.
+
+    `seeking` deliberately does not force this any more. The lua side is the
+    only thing that can tell a drag from a single seek, and it drops the
+    filter itself for a drag; tearing down here on any seek as well would
+    undo that and put the teardown back on every keypress.
+    """
     if hold_age is None:
         return False
     return 0 <= hold_age < max_age
+
+
+def apply_deferred(seeking: bool, hold_age: float | None, max_age: float = SEEK_HOLD_MAX_AGE) -> bool:
+    """True while a fresh apply should wait, without disturbing what is loaded.
+
+    A single seek no longer drops the filter, but pushing a vf add into an
+    mpv that is mid-seek is still wasted work -- it lands on a pipeline that
+    is about to be rebuilt anyway. So applies pause during any seek, while
+    only a drag actually removes anything.
+    """
+    return bool(seeking) or interpolation_held_off(seeking, hold_age, max_age)
 
 
 def as_fps(value: Any) -> float | None:
@@ -138,7 +153,7 @@ def as_fps(value: Any) -> float | None:
 def live_source_fps(container: Any, estimated: Any, interpolating: bool) -> float | None:
     """Decoder rate when it still looks like the file; otherwise container FPS.
 
-    After RIFE, some mpv builds report estimated-vfps as the filtered output.
+    After RIFE, some mpv builds report estimated-vf-fps as the filtered output.
     That must not replace the source readout.
     """
     container_f = as_fps(container)
@@ -210,7 +225,11 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     width = int(_get("width") or 0)
     height = int(_get("height") or 0)
     container = _get("container-fps")
-    estimated = _get("estimated-vfps")
+    # mpv's property is estimated-vf-fps. The name used here until now,
+    # estimated-vfps, does not exist, so _get's IpcError guard swallowed the
+    # "property not found" reply and returned None every single time -- the
+    # fps readout has been silently falling back to container-fps.
+    estimated = _get("estimated-vf-fps")
     display = _get("display-fps")
     est_display = _get("estimated-display-fps")
     vsync = _get("vsync-ratio")

@@ -44,7 +44,20 @@ class Settings:
         if settings.rife_model not in RIFE_MODELS:
             settings.rife_model = 426
         settings.scene_threshold = min(0.30, max(0.02, float(settings.scene_threshold)))
-        settings.trt_streams = min(4, max(1, int(settings.trt_streams)))
+        # Pinned, not clamped. Every extra TensorRT stream builds its own
+        # execution context when the VapourSynth script loads, and mpv reloads
+        # that script on every seek -- so the cost is paid per seek, forever.
+        # Nothing can use those contexts: RIFE is temporal, so both
+        # core.num_threads (vs_script) and mpv's concurrent-frames (inject)
+        # are held at 1 for correctness, leaving exactly one frame request in
+        # flight. Measured on an RTX 5070 Ti at 1080p, 4 streams cost +0.23s
+        # of stall after each seek and +1.1 GB of VRAM (+4.5 GB at 4K) for
+        # identical output fps.
+        #
+        # The slider that used to set this is gone from the UI, so this also
+        # has to migrate whatever an older version left in the config file --
+        # otherwise anyone who had raised it stays stuck there with no way back.
+        settings.trt_streams = 1
         return settings
 
 

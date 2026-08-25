@@ -10,13 +10,26 @@ from fluid_motion.core.runtime import diagnose
 
 def test_settings_roundtrip(tmp_path: Path):
     path = tmp_path / "config.json"
-    settings = Settings(enabled=True, profile="120", trt_streams=3)
+    settings = Settings(enabled=True, profile="120")
     save_settings(settings, path)
     loaded = load_settings(path)
     assert loaded.enabled is True
     assert loaded.profile == "120"
-    assert loaded.trt_streams == 3
     assert loaded.rife_model == 426
+
+
+def test_trt_streams_is_pinned_to_one_on_load(tmp_path: Path):
+    """Anything a previous version stored has to be migrated back down.
+
+    The slider that could raise this is gone, so a config left at 4 would
+    otherwise keep paying the per-seek rebuild forever with no way back.
+    """
+    path = tmp_path / "config.json"
+    save_settings(Settings(trt_streams=4), path)
+    assert load_settings(path).trt_streams == 1
+    assert Settings.from_dict({"trt_streams": 999}).trt_streams == 1
+    assert Settings.from_dict({"trt_streams": 0}).trt_streams == 1
+    assert Settings().trt_streams == 1
 
 
 class _FakeIpc:
@@ -217,12 +230,19 @@ def test_ui_thread_settings_change_does_not_block_on_a_slow_apply(tmp_path, monk
     assert 4321 not in engine._applied, "the deferred change must stay pending for tick()"
 
 
-def test_streams_slider_max_matches_config_clamp():
-    from fluid_motion.config import Settings
+def test_no_streams_control_survives_in_the_ui():
+    """The slider is gone on purpose, so nothing may reintroduce a way to set it.
 
+    Raising it can only ever cost: extra TensorRT contexts are rebuilt on every
+    seek and can never be used, because RIFE is temporal and concurrency is
+    pinned to one frame in flight for correctness.
+    """
     html = (ui_dir() / "index.html").read_text(encoding="utf-8")
-    clamped = Settings.from_dict({"trt_streams": 999}).trt_streams
-    assert f'id="streams" type="range" min="1" max="{clamped}"' in html
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert 'id="streams"' not in html
+    assert "streams-val" not in html
+    assert "trt_streams" not in js
+    assert "set_streams" not in js
 
 
 def test_force_accel_defaults_false_and_roundtrips(tmp_path: Path):
@@ -402,15 +422,35 @@ def test_lua_f3_does_not_inject_vf():
     assert "alive" in lua
 
 
-def test_interpolation_held_off_during_seek_and_hold_file():
+def test_interpolation_held_off_tracks_the_hold_file_not_seeking():
     from fluid_motion.core.inject import interpolation_held_off
 
-    assert interpolation_held_off(seeking=True, hold_age=None) is True
+    # A bare seek no longer removes the filter. Only lua writes the hold file,
+    # and it only does so for a drag -- so seeking alone must not hold off, or
+    # every keypress would pay a teardown again.
+    assert interpolation_held_off(seeking=True, hold_age=None) is False
     assert interpolation_held_off(seeking=False, hold_age=0.1) is True
     assert interpolation_held_off(seeking=False, hold_age=0.0) is True
     assert interpolation_held_off(seeking=False, hold_age=3.0) is False
     assert interpolation_held_off(seeking=False, hold_age=None) is False
     assert interpolation_held_off(seeking=False, hold_age=-0.1) is False
+
+
+def test_apply_deferred_pauses_applies_without_removing():
+    from fluid_motion.core.inject import apply_deferred, interpolation_held_off
+
+    # Mid-seek: applies wait, but nothing is removed -- the two gates differ
+    # precisely here, and that difference is what keeps a single seek cheap.
+    assert apply_deferred(seeking=True, hold_age=None) is True
+    assert interpolation_held_off(seeking=True, hold_age=None) is False
+
+    # A drag holds both gates: the filter comes off and stays off.
+    assert apply_deferred(seeking=False, hold_age=0.1) is True
+    assert interpolation_held_off(seeking=False, hold_age=0.1) is True
+
+    # Settled: neither gate is closed.
+    assert apply_deferred(seeking=False, hold_age=None) is False
+    assert apply_deferred(seeking=False, hold_age=3.0) is False
 
 
 def test_lua_strips_vf_on_seek_without_readding():
@@ -423,6 +463,28 @@ def test_lua_strips_vf_on_seek_without_readding():
     assert 'observe_property("seeking"' in lua
     assert "vf add" not in lua
     assert 'vf", "remove", "@fluid"' in lua
+
+
+def test_lua_only_tears_down_for_a_drag():
+    """The teardown must be gated, and gated on one signal source only.
+
+    Both `seek` and the `seeking` property fire for the same seek, microseconds
+    apart. If both fed the drag detector, every single seek would look like a
+    drag against itself and the gate would be worthless -- so the property
+    observer must not call on_seek().
+    """
+    from fluid_motion.paths import resources_dir
+
+    lua = (resources_dir() / "zz-fluid-ipc.lua").read_text(encoding="utf-8")
+    assert "SCRUB_WINDOW" in lua
+    assert "last_seek_at" in lua
+    # The seek event is the only thing allowed to run drag detection.
+    assert 'register_event("seek", on_seek)' in lua
+    observer = lua.split('observe_property("seeking"', 1)[1]
+    assert "on_seek()" not in observer.split("end)", 1)[0]
+    # And the teardown itself is behind the drag test, not called outright.
+    body = lua.split("local function on_seek()", 1)[1].split("\nend", 1)[0]
+    assert "dragging" in body and "begin_seek_hold()" in body
 
 
 def test_titlebar_has_pywebview_drag_region():
@@ -884,7 +946,7 @@ def test_in_flight_poll_cannot_repaint_stale_settings_over_a_command():
     assert "let commandEpoch = 0;" in js
     assert "if (epoch !== commandEpoch) return;" in js
     # Every settings mutation goes through command(), which bumps the epoch.
-    for name in ("set_profile", "set_model", "set_scene", "set_streams", "set_force_accel", "set_enabled"):
+    for name in ("set_profile", "set_model", "set_scene", "set_force_accel", "set_enabled"):
         assert f'command("{name}"' in js, f"{name} must go through command()"
 
 

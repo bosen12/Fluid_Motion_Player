@@ -28,7 +28,6 @@ const mock = {
     enabled: false,
     profile: "2x",
     scene_threshold: 0.1,
-    trt_streams: 2,
     rife_model: 426,
     autostart: false,
     force_accel: false,
@@ -229,8 +228,6 @@ function render(state) {
   $("scene").value = state.settings.scene_threshold;
   $("scene-val").textContent = Number(state.settings.scene_threshold).toFixed(2);
   renderScenePresets(state.settings.scene_threshold);
-  $("streams").value = state.settings.trt_streams;
-  $("streams-val").textContent = String(state.settings.trt_streams);
   $("force-accel").checked = Boolean(state.settings.force_accel);
   renderCache(state.engine_cache);
 
@@ -342,12 +339,6 @@ function bind() {
     const value = Number(btn.dataset.scenePreset);
     renderScenePresets(value);
     await command("set_scene", value);
-  });
-  $("streams").addEventListener("input", () => {
-    $("streams-val").textContent = $("streams").value;
-  });
-  $("streams").addEventListener("change", async () => {
-    await command("set_streams", Number($("streams").value));
   });
   $("force-accel").addEventListener("change", async () => {
     await command("set_force_accel", $("force-accel").checked);
