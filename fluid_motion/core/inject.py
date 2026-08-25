@@ -248,6 +248,26 @@ def resolve_multi(info: dict[str, Any], settings: Settings) -> int:
     return int(multi)
 
 
+def player_config_dir(ipc: MpvIpc) -> Path | None:
+    """Where this specific player keeps its mpv config, straight from mpv.
+
+    The .vpy has to land in the config dir of the player that will load it,
+    and one configured mpv_root cannot answer that for everyone: an embedded
+    host (AX Player) runs out of its own runtime folder, and a standalone mpv
+    lives wherever a package manager put it. mpv answers for itself over IPC,
+    so ask instead of guessing -- this works for any mpv-based player,
+    embedded or not, with no knowledge of how it was installed.
+    """
+    try:
+        value = ipc.get("config-dir")
+    except IpcError:
+        return None
+    if not value:
+        return None
+    path = Path(str(value))
+    return path if path.is_dir() else None
+
+
 def apply(ipc: MpvIpc, settings: Settings, mpv_root: Path, *, announce: bool = False) -> Path:
     info = snapshot_playback(ipc)
     source = parse_fps(info.get("container_fps") or info.get("fps"))

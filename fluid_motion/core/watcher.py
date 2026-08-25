@@ -20,6 +20,7 @@ from fluid_motion.core.inject import (
     live_source_fps,
     measured_output_fps,
     output_shortfall,
+    player_config_dir,
     remove,
     resolve_multi,
     snapshot_playback,
@@ -205,7 +206,13 @@ class Engine:
             self._invalidate(pid)
             return False
         try:
-            apply(ipc, self.settings, Path(self.settings.mpv_root), announce=announce)
+            # This player's own config dir, not the globally configured root:
+            # the .vpy is only loadable by the mpv that will read it, and a
+            # single setting cannot be right for an embedded host and a
+            # standalone mpv at the same time. Falls back to the setting when
+            # mpv declines to answer.
+            root = player_config_dir(ipc) or Path(self.settings.mpv_root)
+            apply(ipc, self.settings, root, announce=announce)
         except IpcError as exc:
             gone = is_disconnect_error(str(exc))
             if not gone:
