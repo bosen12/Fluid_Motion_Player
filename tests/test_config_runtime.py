@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from fluid_motion.paths import ui_dir
 
 from fluid_motion.config import Settings, load_settings, save_settings
@@ -245,10 +247,17 @@ def test_no_streams_control_survives_in_the_ui():
     assert "set_streams" not in js
 
 
-def test_force_accel_defaults_false_and_roundtrips(tmp_path: Path):
+def test_force_accel_is_pinned_off_on_load(tmp_path: Path):
+    """The gate it lifted no longer controls anything, so it is migrated off.
+
+    Both things safe mode fixes -- num_streams and use_cuda_graph -- are now
+    pinned regardless, which leaves force_accel changing one comment line in
+    the generated .vpy while the UI promised a risky speedup.
+    """
     path = tmp_path / "config.json"
     save_settings(Settings(force_accel=True), path)
-    assert load_settings(path).force_accel is True
+    assert load_settings(path).force_accel is False
+    assert Settings.from_dict({"force_accel": True}).force_accel is False
     assert Settings().force_accel is False
 
 
@@ -613,11 +622,64 @@ def test_gpu_mode_badge_wired_in_ui():
     assert "gpu_safe_mode" in js
 
 
-def test_force_accel_override_wired_in_ui():
+def test_no_force_accel_control_survives_in_the_ui():
     html = (ui_dir() / "index.html").read_text(encoding="utf-8")
     js = (ui_dir() / "app.js").read_text(encoding="utf-8")
-    assert 'id="force-accel"' in html
-    assert "set_force_accel" in js
+    assert 'id="force-accel"' not in html
+    assert "force_accel" not in js
+    assert "set_force_accel" not in js
+
+
+def test_realtime_ratio_measures_shortfall_and_refuses_nonsense():
+    from fluid_motion.core.inject import realtime_ratio
+
+    # Keeping up: position advances as fast as the clock.
+    assert realtime_ratio(1.0, 1.0) == pytest.approx(1.0)
+    # The 4K case this panel exists for.
+    assert realtime_ratio(0.32, 1.0) == pytest.approx(0.32)
+    # mpv's own speed setting must not read as a shortfall or a surplus.
+    assert realtime_ratio(2.0, 1.0, speed=2.0) == pytest.approx(1.0)
+    assert realtime_ratio(0.5, 1.0, speed=0.5) == pytest.approx(1.0)
+
+    # No elapsed time, a stopped clock, or a backwards jump says nothing.
+    assert realtime_ratio(1.0, 0.0) is None
+    assert realtime_ratio(1.0, -1.0) is None
+    assert realtime_ratio(-5.0, 1.0) is None
+    assert realtime_ratio(1.0, 1.0, speed=0) is None
+    # A forward jump is a seek, not 30x playback.
+    assert realtime_ratio(30.0, 1.0) is None
+
+
+def test_realtime_ratio_smooths_towards_new_samples():
+    from fluid_motion.core.inject import realtime_ratio
+
+    # A single 0.3s sample is coarse, so a new reading only moves the figure
+    # part of the way -- but it must move, and in the right direction.
+    moved = realtime_ratio(0.5, 1.0, previous=1.0, smoothing=0.5)
+    assert moved == pytest.approx(0.75)
+    assert realtime_ratio(1.0, 1.0, previous=0.5, smoothing=0.5) == pytest.approx(0.75)
+    # With no history the first usable sample is taken as-is.
+    assert realtime_ratio(0.4, 1.0, previous=None) == pytest.approx(0.4)
+
+
+def test_realtime_label_never_claims_headroom():
+    from fluid_motion.core.inject import realtime_label
+
+    # Above 1.0 is unmeasurable -- mpv presents at the target rate and no
+    # faster -- so a fast pipeline must not be reported as if it had surplus.
+    assert realtime_label(1.8) == "1.00×"
+    assert realtime_label(1.0) == "1.00×"
+    assert realtime_label(0.324) == "0.32×"
+    assert realtime_label(None) == "—"
+
+
+def test_realtime_panel_took_that_slot():
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert 'id="realtime-stat"' in html
+    assert 'id="realtime-bar"' in html
+    assert "function renderRealtime(" in js
+    assert "renderRealtime(" in js.split("function renderRealtime(", 1)[1]  # and it is called
 
 
 def test_rife_425_lite_is_not_offered_in_ui():
@@ -946,7 +1008,7 @@ def test_in_flight_poll_cannot_repaint_stale_settings_over_a_command():
     assert "let commandEpoch = 0;" in js
     assert "if (epoch !== commandEpoch) return;" in js
     # Every settings mutation goes through command(), which bumps the epoch.
-    for name in ("set_profile", "set_model", "set_scene", "set_force_accel", "set_enabled"):
+    for name in ("set_profile", "set_model", "set_scene", "set_enabled"):
         assert f'command("{name}"' in js, f"{name} must go through command()"
 
 

@@ -22,6 +22,8 @@ from fluid_motion.core.inject import (
     measured_output_fps,
     output_shortfall,
     player_config_dir,
+    realtime_label,
+    realtime_ratio,
     remove,
     resolve_multi,
     snapshot_playback,
@@ -89,6 +91,11 @@ class Engine:
         # is what makes the next tick pick the change back up.
         self._applied: dict[int, tuple] = {}
         self._retry_at: dict[int, float] = {}
+        # Per-pid (time-pos, monotonic) of the last usable sample, plus the
+        # smoothed ratio built from them. Realtime speed can only be had by
+        # differencing two observations, so it has to be carried across ticks.
+        self._realtime_seen: dict[int, tuple[float, float]] = {}
+        self._realtime: dict[int, float] = {}
         self._in_hotkey = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -162,6 +169,31 @@ class Engine:
 
     def _mark_settling(self) -> None:
         self._settling_until = time.monotonic() + SETTLE_SECONDS
+
+    def _update_realtime(self, pid: int, info: dict[str, Any]) -> None:
+        """Difference this tick's time-pos against the last to get playback speed.
+
+        Paused and seeking players are dropped rather than sampled: neither
+        advances time-pos for a reason that says anything about whether the
+        pipeline can keep up, and feeding either in would read as a stall.
+        """
+        pos = info.get("time_pos")
+        if info.get("paused") or info.get("seeking") or pos is None:
+            self._realtime_seen.pop(pid, None)
+            return
+        now = time.monotonic()
+        last = self._realtime_seen.get(pid)
+        self._realtime_seen[pid] = (float(pos), now)
+        if last is None:
+            return
+        ratio = realtime_ratio(
+            float(pos) - last[0],
+            now - last[1],
+            speed=float(info.get("speed") or 1.0),
+            previous=self._realtime.get(pid),
+        )
+        if ratio is not None:
+            self._realtime[pid] = ratio
 
     def _filter_key(self, multi: int) -> tuple:
         """Everything that changes the generated .vpy, plus the resolved multi.
@@ -377,6 +409,9 @@ class Engine:
             else:
                 player.output_fps = ""
                 player.estimated_vfps = ""
+            self._update_realtime(player.pid, info)
+            player.realtime = self._realtime.get(player.pid)
+            player.realtime_label = realtime_label(player.realtime)
             live[player.pid] = ipc
             seeking = bool(info.get("seeking"))
             held = self._held_off(seeking)
@@ -419,6 +454,10 @@ class Engine:
                 self._applied.pop(pid, None)
             for pid in [p for p in self._retry_at if p not in live]:
                 self._retry_at.pop(pid, None)
+            for pid in [p for p in self._realtime if p not in live]:
+                self._realtime.pop(pid, None)
+            for pid in [p for p in self._realtime_seen if p not in live]:
+                self._realtime_seen.pop(pid, None)
             if not live:
                 self._error = ""
         cache = engine_cache_info()

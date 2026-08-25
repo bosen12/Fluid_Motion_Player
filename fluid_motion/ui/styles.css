@@ -540,6 +540,28 @@ input[type="range"] {
   flex-shrink: 0;
 }
 
+/* Reuses .gpu-head and .bar from the footer meter: same shape of readout, so
+   it should not grow a second visual language for it. */
+.realtime-panel #realtime-stat {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+
+.realtime-panel #realtime-stat.is-bad {
+  color: var(--color-danger);
+}
+
+.realtime-panel .bar > span.is-bad {
+  background: var(--color-danger);
+}
+
+.realtime-note {
+  margin: var(--space-2xs) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--color-muted);
+}
+
 .cache-panel {
   grid-column: 1 / -1;
   display: flex;

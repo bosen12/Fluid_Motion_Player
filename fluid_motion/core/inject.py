@@ -141,6 +141,55 @@ def apply_deferred(seeking: bool, hold_age: float | None, max_age: float = SEEK_
     return bool(seeking) or interpolation_held_off(seeking, hold_age, max_age)
 
 
+# How much a new realtime sample is allowed to move the running figure. The
+# tick rate is 0.3s and time-pos advances in whole decoded frames, so a raw
+# sample is coarse enough to swing several percent on its own.
+REALTIME_SMOOTHING = 0.35
+# Below this the pipeline is not delivering realtime playback.
+REALTIME_SHORTFALL = 0.97
+
+
+def realtime_ratio(
+    delta_pos: float,
+    delta_wall: float,
+    speed: float = 1.0,
+    previous: float | None = None,
+    smoothing: float = REALTIME_SMOOTHING,
+) -> float | None:
+    """How fast playback is actually advancing, as a multiple of realtime.
+
+    1.0 means the pipeline is keeping up. Lower means it cannot: the 4K
+    measurements that made this worth showing sat at 0.32, and nothing in the
+    UI said so -- the output fps readout is clamped to the presentation rate,
+    so it reads a healthy 48 whether there is 4x of headroom or none at all.
+
+    Deliberately has no meaning above 1.0: mpv presents frames at the target
+    rate and no faster, so a pipeline with room to spare is indistinguishable
+    from one that is exactly keeping up. Headroom cannot be measured from
+    playback, only shortfall can.
+
+    Returns None when the sample cannot say anything -- no elapsed time, a
+    seek or file change moving the position backwards or by a jump, or a
+    stopped clock.
+    """
+    if delta_wall <= 0 or speed <= 0:
+        return None
+    # Backwards or implausibly far: a seek, a loop, or a new file. Either way
+    # the pair of samples does not describe playback speed.
+    if delta_pos < 0 or delta_pos > delta_wall * speed * 4 + 1.0:
+        return None
+    ratio = delta_pos / (delta_wall * speed)
+    if previous is None:
+        return ratio
+    return previous + (ratio - previous) * smoothing
+
+
+def realtime_label(ratio: float | None) -> str:
+    if ratio is None:
+        return "—"
+    return f"{min(ratio, 1.0):.2f}×"
+
+
 def as_fps(value: Any) -> float | None:
     if value is None or value is False:
         return None
@@ -235,6 +284,8 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     vsync = _get("vsync-ratio")
     paused = bool(_get("pause") or False)
     seeking = bool(_get("seeking") or False)
+    time_pos = _get("time-pos")
+    speed = _get("speed")
     interpolating = interpolation_active(ipc)
     source = live_source_fps(container, estimated, interpolating)
     return {
@@ -250,6 +301,8 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
         "paused": paused,
         "seeking": seeking,
         "interpolation": interpolating,
+        "time_pos": float(time_pos) if isinstance(time_pos, (int, float)) else None,
+        "speed": float(speed) if isinstance(speed, (int, float)) and speed > 0 else 1.0,
         "vf": current_filters(ipc),
     }
 

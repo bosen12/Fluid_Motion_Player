@@ -30,7 +30,6 @@ const mock = {
     scene_threshold: 0.1,
     rife_model: 426,
     autostart: false,
-    force_accel: false,
   },
   players: [],
   gpu: {
@@ -157,6 +156,51 @@ function renderCache(cache) {
   stat.textContent = `${info.count} 個引擎 · ${size}`;
 }
 
+// Measured playback speed against realtime. Only ever reports a shortfall:
+// mpv presents frames at the target rate and no faster, so a pipeline with
+// room to spare looks identical to one that is exactly keeping up. Below 1.00
+// is the case worth surfacing -- 4K interpolation sits around 0.3 on hardware
+// that handles 1080p without noticing, and nothing else in the UI says so.
+function renderRealtime(player, connected, compiling, settling) {
+  const stat = $("realtime-stat");
+  const bar = $("realtime-bar");
+  const note = $("realtime-note");
+  if (!stat || !bar || !note) return;
+
+  const ratio = player && typeof player.realtime === "number" ? player.realtime : null;
+  const measuring = connected > 0 && player && !player.paused;
+
+  if (!connected) {
+    stat.textContent = "—";
+    bar.style.width = "0%";
+    note.textContent = "沒有連上的播放器。";
+  } else if (compiling) {
+    stat.textContent = "編譯中";
+    bar.style.width = "0%";
+    note.textContent = "TensorRT 引擎編譯中,這段期間的速度不代表實際效能。";
+  } else if (player && player.paused) {
+    stat.textContent = "已暫停";
+    bar.style.width = "0%";
+    note.textContent = "播放暫停中,無法測量。";
+  } else if (ratio === null || settling) {
+    stat.textContent = "測量中…";
+    bar.style.width = "0%";
+    note.textContent = "播放速度相對於實際時間。1.00× 表示跟得上。";
+  } else {
+    const shown = Math.min(ratio, 1);
+    stat.textContent = `${shown.toFixed(2)}×`;
+    bar.style.width = `${Math.max(0, Math.min(1, shown)) * 100}%`;
+    note.textContent =
+      shown >= 0.97
+        ? "跟得上實時播放。"
+        : `跟不上:只有 ${Math.round(shown * 100)}% 的實時速度。試試降低目標幀率、換較輕的模型,或關閉補幀。`;
+  }
+
+  const bad = measuring && ratio !== null && !settling && !compiling && ratio < 0.97;
+  stat.classList.toggle("is-bad", Boolean(bad));
+  bar.classList.toggle("is-bad", Boolean(bad));
+}
+
 function tickNumber(el, next) {
   if (el.textContent === next) return;
   el.textContent = next;
@@ -228,7 +272,7 @@ function render(state) {
   $("scene").value = state.settings.scene_threshold;
   $("scene-val").textContent = Number(state.settings.scene_threshold).toFixed(2);
   renderScenePresets(state.settings.scene_threshold);
-  $("force-accel").checked = Boolean(state.settings.force_accel);
+  renderRealtime(player, connected, compiling, settling);
   renderCache(state.engine_cache);
 
   const util = state.gpu.utilization || 0;
@@ -339,9 +383,6 @@ function bind() {
     const value = Number(btn.dataset.scenePreset);
     renderScenePresets(value);
     await command("set_scene", value);
-  });
-  $("force-accel").addEventListener("change", async () => {
-    await command("set_force_accel", $("force-accel").checked);
   });
   $("setup").addEventListener("click", async () => {
     render(await call("start_setup"));

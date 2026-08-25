@@ -31,10 +31,6 @@ class Bridge:
         self.engine.update_settings(scene_threshold=float(value))
         return self.get_state()
 
-    def set_force_accel(self, enabled: bool) -> dict[str, Any]:
-        self.engine.update_settings(force_accel=bool(enabled))
-        return self.get_state()
-
     def set_autostart(self, enabled: bool) -> dict[str, Any]:
         from fluid_motion.paths import launch_command
 

@@ -58,6 +58,15 @@ class Settings:
         # has to migrate whatever an older version left in the config file --
         # otherwise anyone who had raised it stays stuck there with no way back.
         settings.trt_streams = 1
+        # Pinned for the same reason, one step further on. The flicker gate
+        # this used to lift controls exactly two things -- num_streams and
+        # use_cuda_graph -- and both are now fixed: streams above, and
+        # cuda_graph has no way to be set and defaults off. Measured, turning
+        # this on changes nothing in the generated .vpy but one comment line,
+        # while the checkbox promised a risky speedup that does not exist.
+        # (cuda_graph itself was measured too: no init or throughput
+        # difference at this pipeline's one-frame-in-flight concurrency.)
+        settings.force_accel = False
         return settings
 
 

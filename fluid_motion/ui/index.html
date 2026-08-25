@@ -77,11 +77,13 @@
               <div class="scene-presets" id="scene-presets" role="group" aria-label="場景閾值預設"></div>
               <input id="scene" type="range" min="0.04" max="0.22" step="0.01" value="0.10" />
             </div>
-            <div class="field">
-              <label class="force-accel">
-                <input type="checkbox" id="force-accel" />
-                <span>強制加速模式(略過 RTX 50 安全檢查,可能導致畫面閃爍)</span>
-              </label>
+            <div class="field realtime-panel">
+              <div class="gpu-head">
+                <span>實時倍率</span>
+                <span id="realtime-stat">—</span>
+              </div>
+              <div class="bar" aria-hidden="true"><span id="realtime-bar"></span></div>
+              <p class="realtime-note" id="realtime-note">播放速度相對於實際時間。1.00× 表示跟得上。</p>
             </div>
             <div class="field cache-panel">
               <div class="cache-info">

@@ -35,6 +35,10 @@ class PlayerProcess:
     settling: bool = False
     interpolation: bool = False
     paused: bool = False
+    # Measured playback speed as a multiple of realtime, None until two
+    # usable samples exist. Saturates at 1.0 -- see inject.realtime_ratio.
+    realtime: float | None = None
+    realtime_label: str = "—"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
