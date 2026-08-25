@@ -246,15 +246,48 @@ def measured_output_fps(
     vsync_ratio: Any,
     estimated_display: Any = None,
 ) -> float | None:
-    """Presented video FPS: display refresh divided by mpv vsync-ratio."""
+    """Presented video FPS: display refresh divided by mpv vsync-ratio.
+
+    Fallback only -- see filtered_output_fps. Both inputs are live estimates,
+    so dividing one by the other multiplies their jitter, and when the
+    pipeline struggles vsync-ratio dips below 1 and the quotient explodes:
+    at 165Hz a ratio of 0.41 reads as 402fps. Nothing can be presented faster
+    than the panel refreshes, so anything above the refresh rate is the
+    estimate breaking down rather than a real measurement.
+    """
     display = as_fps(estimated_display) or as_fps(display_fps)
     vsync = as_fps(vsync_ratio)
     if display is None or vsync is None or vsync < 0.2:
         return None
     out = display / vsync
-    if out < 1 or out > 500:
+    refresh = max(filter(None, (as_fps(display_fps), as_fps(estimated_display))), default=None)
+    if out < 1 or (refresh and out > refresh * 1.05):
         return None
     return out
+
+
+def filtered_output_fps(
+    estimated_vfps: Any,
+    display_fps: Any,
+    vsync_ratio: Any,
+    estimated_display: Any = None,
+    interpolating: bool = False,
+) -> float | None:
+    """What the filter chain is actually putting out.
+
+    mpv reports this directly as estimated-vf-fps, which is both exact and
+    steady: measured against a 72fps target it sat at 72.0 for every sample,
+    while the display/vsync quotient wandered between 70.6 and 74.4 and, on a
+    struggling pipeline, as far as 400. The quotient was only ever here
+    because this property was being read under a name that does not exist, so
+    it always came back empty -- with that fixed there is no reason to prefer
+    the derived figure over the reported one.
+    """
+    if interpolating:
+        direct = as_fps(estimated_vfps)
+        if direct is not None:
+            return direct
+    return measured_output_fps(display_fps, vsync_ratio, estimated_display)
 
 
 def live_fps_label(value: float | None) -> str:

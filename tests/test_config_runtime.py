@@ -553,6 +553,40 @@ def test_measured_output_from_vsync_ratio():
     assert abs(measured_output_fps(60, 1, estimated_display=165) - 165) < 0.1
 
 
+def test_output_readout_cannot_exceed_the_display_refresh():
+    """A 165Hz panel cannot present 400fps, however the arithmetic comes out.
+
+    When the pipeline struggles, vsync-ratio dips below 1 and the quotient
+    runs away: 165 / 0.41 reads as 402, which the old 500fps sanity cap let
+    straight through to the headline number.
+    """
+    from fluid_motion.core.inject import measured_output_fps
+
+    assert measured_output_fps(165, 0.41) is None      # would have read 402
+    assert measured_output_fps(165, 0.9) is None       # 183 -- still impossible
+    assert measured_output_fps(165, 1.0) == pytest.approx(165)
+    assert abs(measured_output_fps(165, 2.29) - 72) < 1
+
+
+def test_output_prefers_the_rate_mpv_reports_over_a_derived_one():
+    """estimated-vf-fps is exact and steady; the quotient of two estimates is not.
+
+    Sampled against a 72fps target, the reported figure was 72.0 every time
+    while the derived one wandered 70.6-74.4. The derived path only existed
+    because this property was read under a misspelled name and never arrived.
+    """
+    from fluid_motion.core.inject import filtered_output_fps
+
+    # Interpolating: take what mpv reports, ignore the noisy quotient.
+    assert filtered_output_fps(72.0, 165, 2.29, None, interpolating=True) == pytest.approx(72.0)
+    assert filtered_output_fps(144.0, 165, 0.41, None, interpolating=True) == pytest.approx(144.0)
+
+    # Not interpolating, or nothing reported: fall back, still bounded.
+    assert filtered_output_fps(None, 165, 2.75, None, interpolating=True) == pytest.approx(60)
+    assert filtered_output_fps(72.0, 165, 2.75, None, interpolating=False) == pytest.approx(60)
+    assert filtered_output_fps(None, 165, 0.41, None, interpolating=True) is None
+
+
 def test_is_settling_true_within_grace_window_when_short():
     from fluid_motion.core.inject import is_settling
 

@@ -17,9 +17,9 @@ from fluid_motion.core.inject import (
     interpolation_held_off,
     is_settling,
     drop_ratio,
+    filtered_output_fps,
     live_fps_label,
     live_source_fps,
-    measured_output_fps,
     output_shortfall,
     playback_is_clean,
     player_config_dir,
@@ -408,10 +408,12 @@ class Engine:
                     player.target_fps = ""
             else:
                 player.target_fps = ""
-            measured = measured_output_fps(
+            measured = filtered_output_fps(
+                info.get("estimated_vfps"),
                 info.get("display_fps"),
                 info.get("vsync_ratio"),
                 info.get("estimated_display_fps"),
+                interpolating=player.interpolation,
             )
             short = output_shortfall(
                 measured,
