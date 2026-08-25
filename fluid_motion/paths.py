@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -86,13 +87,35 @@ def debug_log_path() -> Path:
     return roaming_dir() / "fluid_debug.log"
 
 
-def default_mpv_root() -> Path:
+def mpv_root_candidates() -> list[Path]:
+    """Places an mpv install plausibly lives, best guess first.
+
+    Only a fallback: once a player is running its own config-dir is
+    authoritative and gets used instead (Engine.install_root). This list
+    covers the case where Fluid Motion is opened before any player has
+    started. The previous three entries recognised only a hand-placed
+    C:\\mpv -- every package-manager install, and AX Player's own bundled
+    runtime, looked like "no mpv found".
+    """
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     candidates = [
         Path(r"C:\mpv"),
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "mpv",
         Path.home() / "mpv",
+        # AX Player's packaged build fetches its mpv here and runs out of it
+        # in preference to anything else on the machine.
+        local / "AXPlayer" / "mpv-runtime",
+        Path.home() / "scoop" / "apps" / "mpv" / "current",
+        Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "chocolatey" / "lib" / "mpv",
     ]
-    for path in candidates:
+    on_path = shutil.which("mpv")
+    if on_path:
+        candidates.append(Path(on_path).parent)
+    return candidates
+
+
+def default_mpv_root() -> Path:
+    for path in mpv_root_candidates():
         if (path / "mpv.exe").is_file():
             return path
     return Path(r"C:\mpv")

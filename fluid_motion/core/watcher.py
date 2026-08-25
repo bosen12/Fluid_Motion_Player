@@ -493,6 +493,24 @@ class Engine:
             "engine_compiling": time.monotonic() < engine_growing_until,
         }
 
+    def install_root(self) -> Path:
+        """Where the runtime should be installed.
+
+        A connected player's own config dir wins over the configured root:
+        that is the mpv which will have to load the filter, and on a fresh
+        install the configured value is only default_mpv_root()'s guess --
+        typically C:\\mpv, which on most machines is an empty path nothing
+        uses. Installing there produces a complete, correct runtime that the
+        running player never reads.
+        """
+        with self._lock:
+            connections = list(self._ipc.values())
+        for ipc in connections:
+            root = player_config_dir(ipc)
+            if root is not None:
+                return root
+        return Path(self.settings.mpv_root)
+
     def start_bootstrap(self) -> None:
         if self._bootstrapping:
             return
@@ -507,10 +525,16 @@ class Engine:
                     self._bootstrap_message = message
                     self._bootstrap_progress = ratio
 
-                install_runtime(Path(self.settings.mpv_root), cb)
-                install_lua(Path(self.settings.mpv_root))
-                ensure_input_binding(Path(self.settings.mpv_root))
-                self._runtime = diagnose(self.settings.mpv_root)
+                root = self.install_root()
+                install_runtime(root, cb)
+                install_lua(root)
+                ensure_input_binding(root)
+                # Remember it: the readiness panel reads diagnose(mpv_root),
+                # so leaving the setting pointed at the old guess would report
+                # the freshly installed runtime as still missing.
+                if str(root) != str(self.settings.mpv_root):
+                    self.update_settings(mpv_root=str(root))
+                self._runtime = diagnose(root)
             except Exception as exc:  # noqa: BLE001
                 self._error = str(exc)
                 self._bootstrap_message = f"安裝失敗：{exc}"
