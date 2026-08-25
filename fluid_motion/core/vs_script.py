@@ -156,6 +156,12 @@ def effective_backend(
 def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_fps: float | None = None) -> str:
     multi, _video_player = target_multi(params.profile, source_fps, display_fps)
     engine = Path(params.engine_folder).as_posix() if params.engine_folder else ""
+    # Same normalisation, for the same reason plus one more: this goes into a
+    # raw string literal, and a raw literal cannot end in a backslash. A player
+    # whose config-dir is a drive root reports "D:\\", which produced
+    # MPV_ROOT = r"D:\" -- a SyntaxError that mpv reports only as
+    # "could not init VS", with interpolation silently never loading.
+    mpv_root = Path(params.mpv_root).as_posix() if params.mpv_root else ""
     engine_arg = f',\n        engine_folder=r"{engine}"' if engine else ""
     # CUDA graphs + parallel streams tile-flicker on RTX 50 (Blackwell); unknown
     # GPUs fail toward the same safe path instead of assuming they're fine.
@@ -184,7 +190,7 @@ from fractions import Fraction
 import vapoursynth as vs
 from vapoursynth import core
 
-MPV_ROOT = r"{params.mpv_root}"
+MPV_ROOT = r"{mpv_root}"
 if MPV_ROOT:
     sys.path.insert(0, MPV_ROOT)
     sys.path.insert(0, os.path.join(MPV_ROOT, "vs-plugins"))

@@ -36,6 +36,14 @@ from fluid_motion.core.runtime import diagnose
 from fluid_motion.core.vs_script import effective_backend, parse_fps, target_multi
 
 ENGINE_GROWTH_GRACE = 3.0
+# How often the housekeeping half of tick() runs -- the TensorRT engine-cache
+# scan, the runtime diagnosis and the nvidia-smi snapshot. None of it depends
+# on the tick rate: at 0.3s an app sitting in the tray with no player open was
+# walking two directory trees three times a second and spawning nvidia-smi
+# every 1.5s (its own cache TTL), forever. The active figure still refreshes
+# the readouts faster than anyone reads them.
+HOUSEKEEPING_ACTIVE = 1.0
+HOUSEKEEPING_IDLE = 5.0
 # A failed apply() is retried by the next tick, but not at the 0.3s tick rate:
 # an mpv that is refusing vf commands would otherwise be hammered forever.
 APPLY_RETRY_BACKOFF = 2.0
@@ -82,6 +90,7 @@ class Engine:
         self._engine_cache = engine_cache_info()
         self._engine_bytes = self._engine_cache.total_bytes
         self._engine_growing_until = 0.0
+        self._housekeeping_at = 0.0
         # Guards apply()/remove() specifically: tick() (background thread)
         # and set_enabled()/update_settings() (pywebview bridge thread) both
         # decide independently whether to re-apply, and a slow apply() (mpv
@@ -495,18 +504,28 @@ class Engine:
                 self._drops.pop(pid, None)
             if not live:
                 self._error = ""
-        cache = engine_cache_info()
         now = time.monotonic()
-        self._engine_growing_until = next_growth_deadline(
-            cache.total_bytes, self._engine_bytes, now, self._engine_growing_until, ENGINE_GROWTH_GRACE
-        )
-        self._engine_bytes = cache.total_bytes
+        # The engine cache only grows while a TensorRT engine is compiling, and
+        # that only happens with a player connected -- so an idle app can look
+        # far less often without ever missing one.
+        if now >= self._housekeeping_at:
+            self._housekeeping_at = now + (
+                HOUSEKEEPING_ACTIVE if (live or self._bootstrapping) else HOUSEKEEPING_IDLE
+            )
+            cache = engine_cache_info()
+            self._engine_growing_until = next_growth_deadline(
+                cache.total_bytes, self._engine_bytes, now, self._engine_growing_until, ENGINE_GROWTH_GRACE
+            )
+            self._engine_bytes = cache.total_bytes
+            gpu = gpu_snapshot()
+            runtime = diagnose(self.settings.mpv_root)
+            with self._lock:
+                self._gpu = gpu
+                self._runtime = runtime
+                self._engine_cache = cache
         with self._lock:
             self._ipc = live
             self._players = players
-            self._gpu = gpu_snapshot()
-            self._runtime = diagnose(self.settings.mpv_root)
-            self._engine_cache = cache
 
     def set_enabled(self, enabled: bool) -> None:
         self.settings.enabled = bool(enabled)
@@ -546,9 +565,21 @@ class Engine:
         self.tick(apply_wait=UI_APPLY_WAIT)
 
     def update_settings(self, **kwargs: Any) -> None:
+        # Through Settings.from_dict, not straight onto the dataclass: the
+        # clamping and migration rules live there and used to run only at load
+        # time, so a value set at runtime (scene_threshold=0.9 from the
+        # bridge) was written into the .vpy and saved as-is, then silently
+        # became 0.30 on the next launch. Same config, different playback
+        # either side of a restart.
+        data = self.settings.to_dict()
         for key, value in kwargs.items():
-            if hasattr(self.settings, key):
-                setattr(self.settings, key, value)
+            if key in data:
+                data[key] = value
+        validated = Settings.from_dict(data)
+        # Mutated in place rather than rebound: tick() and the bridge threads
+        # both hold this same object.
+        for key, value in validated.to_dict().items():
+            setattr(self.settings, key, value)
         if self.settings.enabled:
             self.set_enabled(True)  # saves; no need to write the file twice
         else:

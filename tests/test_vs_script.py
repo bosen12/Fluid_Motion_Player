@@ -217,3 +217,22 @@ def test_write_vpy(tmp_path: Path):
     write_vpy(path, RifeParams(profile="2x", mpv_root=r"C:\mpv"))
     assert path.is_file()
     assert "MULTI = 2" in path.read_text(encoding="utf-8")
+
+
+def test_render_vpy_survives_a_root_ending_in_a_backslash():
+    """A drive-root config dir must not produce a .vpy that cannot compile.
+
+    r"D:\\" is a raw literal ending in a backslash -- a SyntaxError that mpv
+    reports only as "could not init VS".
+    """
+    import ast
+
+    text = render_vpy(RifeParams(mpv_root="D:\\", engine_folder=r"C:\cache"))
+    assert 'MPV_ROOT = r"D:/"' in text
+    ast.parse(text)
+
+
+def test_render_vpy_is_valid_python_for_a_normal_root():
+    import ast
+
+    ast.parse(render_vpy(RifeParams(mpv_root=r"C:\mpv", engine_folder=r"C:\cache")))

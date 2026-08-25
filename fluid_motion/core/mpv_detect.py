@@ -177,6 +177,20 @@ def list_win_pipes() -> list[str]:
         return []
 
 
+def pipe_names_pid(raw: str, pid: int) -> bool:
+    """True when this pipe name belongs to *this* pid, not merely contains it.
+
+    A plain substring test matches the wrong process: pid 234 matches pid
+    12345's `mpvSockets\12345`, and connecting to it hands one mpv's IPC to
+    another mpv's PlayerProcess -- the filter is then applied twice to one
+    player while the other is never touched, and the applied-settings
+    bookkeeping is keyed to the wrong pid.
+    """
+    name = raw.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    needle = str(pid)
+    return name == needle or name.lower() == f"fluid-mpv-{needle}" or name.endswith(f"-{needle}")
+
+
 def candidate_pipes(pid: int, extra: Iterable[str] = ()) -> list[str]:
     socket_path = str(windows_temp_dir() / "mpvSockets" / str(pid))
     names = [
@@ -188,10 +202,9 @@ def candidate_pipes(pid: int, extra: Iterable[str] = ()) -> list[str]:
         socket_path,
     ]
     names.extend(extra)
-    needle = str(pid)
     for raw in list_win_pipes():
         low = raw.lower()
-        if needle not in raw and f"fluid-mpv-{pid}" not in low:
+        if not pipe_names_pid(raw, pid):
             continue
         if "thumbfast" in low:
             continue

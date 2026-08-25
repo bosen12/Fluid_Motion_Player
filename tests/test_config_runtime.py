@@ -414,6 +414,52 @@ def test_candidate_pipes_include_fluid_and_mpvpipe():
     assert any(p.endswith("mpvpipe") or p.endswith("\\mpvpipe") for p in pipes)
 
 
+def test_candidate_pipes_ignores_a_pid_that_is_only_a_substring(monkeypatch):
+    """pid 234 must not pick up pid 12345's socket.
+
+    Connecting to it would hand one mpv's IPC to another mpv's PlayerProcess:
+    the filter goes on the wrong player twice and the applied-settings
+    bookkeeping is keyed to a pid that never got it.
+    """
+    from fluid_motion.core import mpv_detect
+
+    monkeypatch.setattr(
+        mpv_detect, "list_win_pipes", lambda: [r"mpvSockets\12345", r"mpvSockets\234"]
+    )
+    pipes = mpv_detect.candidate_pipes(234)
+    assert not any("12345" in p for p in pipes)
+    assert any(p.endswith(r"\234") for p in pipes)
+
+
+def test_pipe_names_pid_matches_whole_names_only():
+    from fluid_motion.core.mpv_detect import pipe_names_pid
+
+    assert pipe_names_pid(r"mpvSockets\234", 234)
+    assert pipe_names_pid("fluid-mpv-234", 234)
+    assert pipe_names_pid("mpv-234", 234)
+    assert not pipe_names_pid(r"mpvSockets\12345", 234)
+    assert not pipe_names_pid("fluid-mpv-12345", 234)
+    assert not pipe_names_pid("1234", 234)
+
+
+def test_update_settings_validates_like_a_load(tmp_path: Path):
+    """A runtime change has to land on the same value a restart would.
+
+    The clamps live in Settings.from_dict, which only ran at load time, so a
+    scene threshold set from the UI was used and saved unclamped and then
+    quietly changed on the next launch.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path)))
+    engine.update_settings(scene_threshold=0.9)
+    assert engine.settings.scene_threshold == 0.30
+    engine.update_settings(profile="nonsense")
+    assert engine.settings.profile == "2x"
+    engine.update_settings(profile="3x")
+    assert engine.settings.profile == "3x"
+
+
 def test_candidate_pipes_include_mpvsockets_prefixed_path():
     from fluid_motion.core.mpv_detect import windows_temp_dir
     from fluid_motion.core.mpv_ipc import as_win_pipe

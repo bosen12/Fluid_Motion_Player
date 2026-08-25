@@ -16,10 +16,15 @@ def try_acquire() -> bool:
         return True
     import ctypes
 
-    kernel32 = ctypes.windll.kernel32
+    # use_last_error, rather than calling kernel32.GetLastError() as a second
+    # foreign call: ctypes makes no promise about what happens to the thread's
+    # last-error value between two calls, and losing ERROR_ALREADY_EXISTS here
+    # means a second copy starts and both drive the same mpv over IPC,
+    # applying and removing the filter against each other.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = ctypes.c_void_p
     handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
-    already = kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+    already = ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
     if not handle:
         return True
     if already:
