@@ -1663,3 +1663,97 @@ def test_snapshot_reads_vf_once(monkeypatch):
     assert reads.count("vf") == 1, f"vf read {reads.count('vf')} times"
     assert info["interpolation"] is True
     assert "fluid" in info["vf"]
+
+
+def test_a_failed_connect_does_not_forget_a_live_players_hwdec(monkeypatch):
+    """The sweep runs against processes seen, not connections made.
+
+    Everything else cleared there is recoverable -- dropping _applied just
+    re-applies on the next tick -- but the saved hwdec is not:
+    ensure_copyback_hwdec returns early once the player is already on
+    copy-back, so nothing writes the entry back. Keying it on `live` meant
+    one tick that failed to connect lost the original mode for good and the
+    player stayed on auto-copy with no filter loaded.
+    """
+    from fluid_motion.core import inject as inject_mod
+    from fluid_motion.core import watcher as watcher_mod
+
+    inject_mod._PREV_HWDEC.clear()
+    inject_mod._PREV_HWDEC[4321] = "auto-safe"
+
+    engine = watcher_mod.Engine(Settings())
+    monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(
+        watcher_mod, "iter_mpv_processes",
+        lambda: [watcher_mod.PlayerProcess(pid=4321, name="mpv.exe")],
+    )
+    # alive, but not answering this tick
+    monkeypatch.setattr(watcher_mod, "connect_pid", lambda p, extra=None, **kw: None)
+    engine.tick()
+    assert inject_mod.hwdec_pids() == [4321], "forgot a player that is still running"
+
+    # gone for real -> forgotten
+    monkeypatch.setattr(watcher_mod, "iter_mpv_processes", lambda: [])
+    engine.tick()
+    assert inject_mod.hwdec_pids() == [], "kept a player that has exited"
+
+
+def test_seek_hold_falls_back_to_the_pre_v145_shared_name():
+    """install_lua only rewrites the file; an mpv already running keeps the
+    old script in memory and writes the shared name. Without a fallback the
+    per-pid file never appears for it, the post-seek debounce disappears, and
+    the tick after mpv clears `seeking` re-applies the filter mid-drag.
+    """
+    import os
+    import time
+
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.paths import seek_hold_path
+
+    engine = watcher_mod.Engine(Settings())
+    shared = seek_hold_path()
+    shared.write_text("1", encoding="utf-8")
+    recent = time.time() - 0.5
+    os.utime(shared, (recent, recent))
+    try:
+        assert engine._held_off(999) is True, "old-lua hold was ignored"
+    finally:
+        shared.unlink(missing_ok=True)
+    assert engine._held_off(999) is False, "nothing on disk must not read as held"
+
+
+def test_startup_sweep_keeps_a_hold_a_player_is_still_using(tmp_path):
+    """The sweep collects orphans. Launching while a player is mid-drag must
+    not delete the hold it wrote moments ago."""
+    import os
+    import time
+
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.inject import SEEK_HOLD_MAX_AGE
+    from fluid_motion.paths import seek_hold_path
+
+    fresh = seek_hold_path(111)
+    fresh.write_text("1", encoding="utf-8")
+    stale = seek_hold_path(222)
+    stale.write_text("1", encoding="utf-8")
+    old = time.time() - SEEK_HOLD_MAX_AGE - 60
+    os.utime(stale, (old, old))
+
+    watcher_mod.Engine(Settings())._sweep_seek_holds()
+    assert fresh.exists(), "deleted a hold that is still in use"
+    assert not stale.exists(), "kept an orphan"
+    fresh.unlink(missing_ok=True)
+
+
+def test_the_ui_does_not_gate_its_poll_on_document_hidden():
+    """pywebview's hide() leaves document.hidden false, so the gate v1.4.5
+    added never fired. Probed: hidden=false and visibilityState="visible"
+    before hide(), after hide() and after show(), with the interval still
+    advancing. It is removed rather than reimplemented -- an idle get_state()
+    is 0.200ms, 13.4ms per minute at this interval.
+    """
+    app_js = (Path(__file__).resolve().parent.parent
+              / "fluid_motion" / "ui" / "app.js").read_text(encoding="utf-8")
+    assert "setInterval(refresh, 900)" in app_js
+    assert "document.hidden" not in app_js.split("DOMContentLoaded")[-1]

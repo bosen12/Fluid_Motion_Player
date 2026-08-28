@@ -408,21 +408,22 @@ function bind() {
   $("btn-quit").addEventListener("click", () => call("quit"));
 }
 
-// Nothing to repaint while the window is hidden, and hidden in the tray is
-// this app's normal state -- it is where --start-hidden opens and where the
-// close button leaves it. The poll used to keep running there, asking the
-// engine for a full state snapshot (which restats the mpv tree through
-// find_mpv_executable) every 0.9s for a surface nobody can see. Refreshing on
-// the way back in keeps the first visible frame current rather than up to
-// 0.9s stale.
+// Polls unconditionally, including while the window sits hidden in the tray.
+//
+// v1.4.5 gated this on document.hidden, on the reasoning that the tray is
+// this app's normal state and nobody can see the panel there. The gate never
+// fired: pywebview's hide() hides the native window without telling the
+// WebView2 document anything. Probed directly -- a 100ms counter reports
+// document.hidden=false and visibilityState="visible" before hide(), after
+// hide(), and after show(), and keeps advancing at the same rate throughout.
+//
+// Driving it from the Python side would work, but the saving does not justify
+// it: an idle get_state() measures 0.200ms, which is 13.4ms of work per minute
+// at this interval -- an order of magnitude below the figures that retired the
+// other performance items. So the gate is gone rather than reimplemented.
 document.addEventListener("DOMContentLoaded", () => {
   bind();
   render(mock);
   refresh();
-  setInterval(() => {
-    if (!document.hidden) refresh();
-  }, 900);
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh();
-  });
+  setInterval(refresh, 900);
 });

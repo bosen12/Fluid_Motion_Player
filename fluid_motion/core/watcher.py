@@ -12,6 +12,7 @@ from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
 from fluid_motion.core.engine_cache import info as engine_cache_info, next_growth_deadline
 from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
+    SEEK_HOLD_MAX_AGE,
     SETTLE_SECONDS,
     apply,
     forget_hwdec,
@@ -186,9 +187,18 @@ class Engine:
             seek_hold_path().unlink(missing_ok=True)
         except OSError:
             pass
+        cutoff = time.time() - SEEK_HOLD_MAX_AGE
         try:
             for stale in seek_hold_path().parent.glob("seek_hold-*"):
                 try:
+                    # Only ones nothing could still be relying on. Launching
+                    # while a player is mid-drag would otherwise delete the
+                    # hold it wrote moments ago, and the first tick could then
+                    # apply the filter into the middle of the seek -- which is
+                    # what the file is there to prevent. Anything past
+                    # SEEK_HOLD_MAX_AGE is already ignored by every reader.
+                    if stale.stat().st_mtime > cutoff:
+                        continue
                     stale.unlink()
                 except OSError:
                     pass
@@ -196,10 +206,27 @@ class Engine:
             pass
 
     def _seek_hold_age(self, pid: int) -> float | None:
-        try:
-            return time.time() - seek_hold_path(pid).stat().st_mtime
-        except OSError:
-            return None
+        """Age of this player's hold, falling back to the pre-v1.4.5 name.
+
+        install_lua only rewrites the script on disk. An mpv that was already
+        running has the old one in memory -- mpv loads scripts at launch --
+        and that one writes the shared `seek_hold`. Without this fallback the
+        per-pid file simply never appears for such a player, _held_off drops
+        to the bare `seeking` property, and the post-seek debounce is gone:
+        the tick after mpv clears `seeking` re-applies the filter, so dragging
+        the seek bar rebuilds the VapourSynth/TensorRT pipeline between drags.
+
+        The shared file cannot say which player wrote it, so while one is
+        still on the old script its seeks do hold off the others -- exactly
+        the behaviour this release set out to fix. That is the pre-v1.4.5
+        behaviour for that player either way, and it ends when it restarts.
+        """
+        for path in (seek_hold_path(pid), seek_hold_path()):
+            try:
+                return time.time() - path.stat().st_mtime
+            except OSError:
+                continue
+        return None
 
     def _held_off(self, pid: int, seeking: bool = False) -> bool:
         return interpolation_held_off(seeking, self._seek_hold_age(pid))
@@ -420,6 +447,7 @@ class Engine:
         # for a lone player, where it is sometimes the only way in and cannot
         # be pointing at anybody else.
         allow_ambiguous = len(players) <= 1
+        seen_pids = {player.pid for player in players}
         for player in players:
             ipc = old.get(player.pid)
             if ipc is None:
@@ -531,9 +559,16 @@ class Engine:
                 self._realtime_seen.pop(pid, None)
             for pid in [p for p in self._drops if p not in live]:
                 self._drops.pop(pid, None)
-            # Nothing to restore it onto any more, and leaving it would hand
-            # this player's decoding mode to whoever inherits the pid later.
-            for pid in [p for p in hwdec_pids() if p not in live]:
+            # Against the processes that were *seen*, not the ones that
+            # answered. Everything else swept here is recoverable -- dropping
+            # _applied just re-applies next tick -- but the saved hwdec is
+            # not: ensure_copyback_hwdec returns early once the player is
+            # already on copy-back, so nothing ever writes the entry back.
+            # Keying this on `live` meant one tick that failed to connect (a
+            # pipe not answering while mpv builds a TensorRT engine) lost the
+            # mode for good, and the player stayed on auto-copy for the rest
+            # of its life, paying the GPU->CPU transfer with no filter on.
+            for pid in [p for p in hwdec_pids() if p not in seen_pids]:
                 forget_hwdec(pid)
             if not live:
                 self._error = ""
