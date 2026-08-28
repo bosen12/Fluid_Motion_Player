@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,9 +98,28 @@ def load_settings(path: Path | None = None) -> Settings:
 
 
 def save_settings(settings: Settings, path: Path | None = None) -> None:
+    """Write the config, atomically.
+
+    An interrupted in-place write leaves truncated JSON, which load_settings'
+    JSONDecodeError guard above reads as "no config" and answers with a
+    default Settings() -- every setting silently back to factory, with nothing
+    said about it. That guard is the right behaviour for a file someone hand
+    edited badly; it should not be reachable because this function was cut off
+    halfway. set_enabled() calls this on every toggle, so the window is not
+    hypothetical.
+    """
     target = path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(settings.to_dict(), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(settings.to_dict(), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, target)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise

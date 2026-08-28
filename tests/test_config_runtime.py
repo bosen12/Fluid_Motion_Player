@@ -1367,3 +1367,119 @@ def test_hotkey_dispatch_does_not_re_enter_itself(tmp_path, monkeypatch):
     except RecursionError:
         raise AssertionError("hotkey dispatch recursed without bound") from None
     assert depth["max"] <= 2, f"hotkey dispatch nested {depth['max']} deep"
+
+
+def test_diagnose_accepts_an_embedded_python_other_than_312(tmp_path: Path):
+    """The version pin belongs to install_vapoursynth, not to readiness.
+
+    python312.dll used to be hardcoded here, and this check counts towards
+    core_ok -- so an mpv tree built around any other embedded CPython would
+    have been reported as "not ready" and refused to interpolate at all,
+    with the message pointing at Python rather than at the pin.
+    """
+    (tmp_path / "mpv.exe").write_bytes(b"mz")
+    (tmp_path / "vapoursynth.dll").write_bytes(b"dll")
+    (tmp_path / "python.exe").write_bytes(b"py")
+    (tmp_path / "python313.dll").write_bytes(b"dll")
+    plugins = tmp_path / "vs-plugins"
+    plugins.mkdir()
+    (plugins / "MiscFilters.dll").write_bytes(b"dll")
+    (plugins / "vstrt.dll").write_bytes(b"dll")
+    (plugins / "nvinfer.dll").write_bytes(b"dll")
+    (tmp_path / "vsmlrt.py").write_text("x", encoding="utf-8")
+    models = plugins / "models" / "rife"
+    models.mkdir(parents=True)
+    (models / "rife_v4.6.onnx").write_bytes(b"onnx")
+
+    status = diagnose(tmp_path)
+    assert status.ready is True
+    check = next(c for c in status.checks if c.id == "python")
+    assert check.ok is True
+    assert "python313.dll" in check.detail
+
+
+def test_diagnose_reports_the_versioned_python_dll_not_the_abi_shim(tmp_path: Path):
+    (tmp_path / "python.exe").write_bytes(b"py")
+    (tmp_path / "python3.dll").write_bytes(b"dll")
+    (tmp_path / "python312.dll").write_bytes(b"dll")
+    check = next(c for c in diagnose(tmp_path).checks if c.id == "python")
+    assert "python312.dll" in check.detail
+
+
+def _writes_land_on(monkeypatch, destination: Path) -> list[Path]:
+    """Record every path opened for writing, so a test can assert the content
+    never goes straight onto `destination`.
+
+    Asserting "the old file survives an exception" is not enough: raise before
+    the write starts and an in-place implementation passes too. What actually
+    distinguishes them is *where the bytes go* -- a temp sibling that is then
+    os.replace'd in, versus the destination itself, which is truncated the
+    moment it is opened.
+    """
+    written: list[Path] = []
+    real = Path.write_text
+
+    def spy(self, *args, **kwargs):
+        written.append(Path(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy)
+    return written
+
+
+def test_config_is_never_written_in_place(tmp_path, monkeypatch):
+    """An in-place write that dies halfway truncates config.json, and
+    load_settings' JSONDecodeError guard reads that as "no config" -- silently
+    answering with a factory-default Settings(). set_enabled() writes on every
+    toggle, so the window is not hypothetical.
+    """
+    path = tmp_path / "config.json"
+    save_settings(Settings(enabled=True, profile="3x"), path)
+
+    written = _writes_land_on(monkeypatch, path)
+    save_settings(Settings(enabled=False, profile="2x"), path)
+
+    assert written, "nothing was written at all"
+    assert path not in written, "config.json was truncated in place"
+    assert load_settings(path).profile == "2x"
+    assert not list(tmp_path.glob("*.tmp")), "temp file left behind"
+
+
+def test_vpy_is_never_written_in_place(tmp_path, monkeypatch):
+    """mpv reloads the .vpy on every seek, so this file is read far more often
+    than anything else this app writes -- and apply() rewrites it on every
+    settings change. A truncated read surfaces only as "could not init VS":
+    interpolation stops with nothing pointing at the cause.
+    """
+    from fluid_motion.core.vs_script import RifeParams, write_vpy
+
+    path = tmp_path / "shaders" / "fluid_rife.vpy"
+    write_vpy(path, RifeParams(profile="2x"))
+
+    written = _writes_land_on(monkeypatch, path)
+    write_vpy(path, RifeParams(profile="3x"))
+
+    assert written, "nothing was written at all"
+    assert path not in written, "fluid_rife.vpy was truncated in place"
+    assert "MULTI = 3" in path.read_text(encoding="utf-8")
+    assert [p.name for p in path.parent.iterdir()] == ["fluid_rife.vpy"]
+
+
+def test_a_failed_write_does_not_destroy_the_previous_file(tmp_path, monkeypatch):
+    """The other half: os.replace never runs, so what was there stays there."""
+    from fluid_motion.core import vs_script as vs_mod
+    from fluid_motion.core.vs_script import RifeParams, write_vpy
+
+    path = tmp_path / "shaders" / "fluid_rife.vpy"
+    write_vpy(path, RifeParams(profile="2x"))
+    before = path.read_text(encoding="utf-8")
+
+    def explode(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(vs_mod.os, "replace", explode)
+    with pytest.raises(OSError):
+        write_vpy(path, RifeParams(profile="3x"))
+
+    assert path.read_text(encoding="utf-8") == before
+    assert not list(path.parent.glob("*.tmp")), "temp file left behind"

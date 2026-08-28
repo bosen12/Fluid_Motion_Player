@@ -121,9 +121,23 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
         Check("rife426", rife_label(426), onnx426 is not None, str(onnx426) if onnx426 else "尚未下載 rife_v4.26.onnx")
     )
 
-    python_ok = (root / "python.exe").is_file() and (root / "python312.dll").is_file()
+    # Any embedded CPython, not specifically 3.12. install_vapoursynth pins
+    # 3.12 because that is what the VapourSynth R70 wheel targets, but this
+    # check also has to pass for a tree somebody assembled themselves -- and
+    # it is part of core_ok, so a hardcoded python312.dll would one day report
+    # a perfectly good runtime as "not ready" and refuse to interpolate, with
+    # the message pointing at Python rather than at the version pin.
+    # Longest name first so a versioned python31X.dll is reported in
+    # preference to the stable-ABI python3.dll that ships beside it.
+    python_dll = next(iter(sorted(root.glob("python3*.dll"), key=lambda p: -len(p.name))), None)
+    python_ok = (root / "python.exe").is_file() and python_dll is not None
     checks.append(
-        Check("python", "mpv 內嵌 Python 3.12", python_ok, str(root / "python.exe") if python_ok else "缺少內嵌 Python")
+        Check(
+            "python",
+            "mpv 內嵌 Python",
+            python_ok,
+            f"{root / 'python.exe'}（{python_dll.name}）" if python_ok else "缺少內嵌 Python",
+        )
     )
 
     core_ok = all(c.ok for c in checks if c.id not in {"rife46", "rife425", "rife426"})

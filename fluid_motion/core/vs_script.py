@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -285,6 +286,28 @@ clip.set_output()
 
 
 def write_vpy(path: Path, params: RifeParams, source_fps: Fraction | None = None, display_fps: float | None = None) -> Path:
+    """Write the script, atomically.
+
+    Of everything this app writes, this is the file most likely to be read
+    while it is being written: mpv reloads the .vpy on *every seek*, and
+    apply() rewrites it on every settings change. An in-place write leaves a
+    window where mpv reads a truncated script, and all mpv says for that is
+    "could not init VS" -- interpolation simply stops, with nothing pointing
+    at the cause. Same reasoning as the resume.json and download fixes, on the
+    file with by far the highest read frequency.
+
+    The temp file is a sibling so os.replace stays on one filesystem, and it
+    carries the pid so two processes cannot collide on it.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_vpy(params, source_fps, display_fps), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(render_vpy(params, source_fps, display_fps), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return path
