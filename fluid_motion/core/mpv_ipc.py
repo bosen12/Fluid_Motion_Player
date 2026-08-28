@@ -185,9 +185,14 @@ def _open_socket(path: str) -> MpvIpc | None:
     return MpvIpc(sock, "unix", path)
 
 
-def connect_pid(pid: int, extra: list[str] | tuple[str, ...] | None = None) -> MpvIpc | None:
+def connect_pid(
+    pid: int,
+    extra: list[str] | tuple[str, ...] | None = None,
+    *,
+    allow_ambiguous: bool = True,
+) -> MpvIpc | None:
     extras = extra or ()
-    for name in candidate_pipes(pid, extras):
+    for name in candidate_pipes(pid, extras, allow_ambiguous=allow_ambiguous):
         ipc = _open_named_pipe(name) if os.name == "nt" else None
         if ipc is None:
             ipc = _open_socket(name)

@@ -79,8 +79,19 @@ def hotkey_path() -> Path:
     return roaming_dir() / "hotkey"
 
 
-def seek_hold_path() -> Path:
-    return roaming_dir() / "seek_hold"
+def seek_hold_path(pid: int | None = None) -> Path:
+    """Per player, because the hold-off it drives is per player.
+
+    This used to be one shared file: every mpv's zz-fluid-ipc.lua touched it
+    on seek and every player's tick() read it, so seeking in one player tore
+    the filter off *every* connected player and made them all sit out the
+    debounce. Only reachable with two players open, which is why it lasted
+    this long.
+
+    pid=None is the old shared name, kept so start-up can delete a file an
+    older build left behind.
+    """
+    return roaming_dir() / (f"seek_hold-{pid}" if pid is not None else "seek_hold")
 
 
 def debug_log_path() -> Path:

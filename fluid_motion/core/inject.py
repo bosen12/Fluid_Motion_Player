@@ -66,14 +66,17 @@ def _vf_arg(script: Path | None = None) -> str:
     return f'{FILTER_LABEL}:vapoursynth="~~/shaders/fluid_rife.vpy":4:1'
 
 
-def current_filters(ipc: MpvIpc) -> str:
-    try:
-        value = ipc.get("vf")
-    except IpcError:
-        return ""
+def format_filters(value: Any) -> str:
     if isinstance(value, list):
         return ",".join(str(item) for item in value)
     return str(value or "")
+
+
+def current_filters(ipc: MpvIpc) -> str:
+    try:
+        return format_filters(ipc.get("vf"))
+    except IpcError:
+        return ""
 
 
 def vf_is_fluid(value: Any) -> bool:
@@ -349,7 +352,13 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     time_pos = _get("time-pos")
     speed = _get("speed")
     drops = _get("frame-drop-count")
-    interpolating = interpolation_active(ipc)
+    # One read of vf, not two. interpolation_active() and current_filters()
+    # each fetched it, so every player paid an extra IPC round trip three
+    # times a second for a value that had just been read -- and the docstring
+    # on rate_snapshot puts a round trip at ~15ms while mpv is busy running
+    # the filter.
+    vf_raw = _get("vf")
+    interpolating = vf_is_fluid(vf_raw)
     source = live_source_fps(container, estimated, interpolating)
     return {
         "media": str(media),
@@ -367,7 +376,7 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
         "time_pos": float(time_pos) if isinstance(time_pos, (int, float)) else None,
         "speed": float(speed) if isinstance(speed, (int, float)) and speed > 0 else 1.0,
         "drops": float(drops) if isinstance(drops, (int, float)) else None,
-        "vf": current_filters(ipc),
+        "vf": format_filters(vf_raw),
     }
 
 
@@ -415,7 +424,13 @@ def resolve_multi(info: dict[str, Any], settings: Settings) -> int:
 # CPU-side filter, so a GPU-resident frame (plain "auto", "auto-safe",
 # "d3d11va", "nvdec", ...) cannot be fed to it and the filter fails to load.
 # Copy-back modes and software decoding are both fine.
-_PREV_HWDEC: dict[str, str] = {}
+# Keyed by pid. It used to be keyed by ipc.path, which is not an identity:
+# an mpv that exits without a clean remove() leaves its entry behind, and the
+# next player to land on the same pipe name -- easy when the name carries no
+# pid at all -- would have that stale value restored onto it. Pids are not
+# reused while the process is alive, and forget_hwdec() clears the entry when
+# a player goes away.
+_PREV_HWDEC: dict[int, str] = {}
 _COPYBACK_HWDEC = "auto-copy"
 
 
@@ -444,7 +459,7 @@ def _hwdec_is_copyback(value: Any) -> bool:
     )
 
 
-def ensure_copyback_hwdec(ipc: MpvIpc) -> None:
+def ensure_copyback_hwdec(ipc: MpvIpc, pid: int | None = None) -> None:
     """Switch the player to copy-back decoding for as long as RIFE is loaded.
 
     Previously this was left entirely to the user's mpv.conf ("hwdec=auto-copy"
@@ -467,18 +482,31 @@ def ensure_copyback_hwdec(ipc: MpvIpc) -> None:
         ipc.set("hwdec", _COPYBACK_HWDEC)
     except IpcError:
         return
-    _PREV_HWDEC[ipc.path] = _hwdec_text(current)
+    if pid is not None:
+        _PREV_HWDEC[pid] = _hwdec_text(current)
 
 
-def restore_hwdec(ipc: MpvIpc) -> None:
+def restore_hwdec(ipc: MpvIpc, pid: int | None = None) -> None:
     """Put back whatever decoding mode the player had before we changed it."""
-    previous = _PREV_HWDEC.pop(ipc.path, None)
+    if pid is None:
+        return
+    previous = _PREV_HWDEC.pop(pid, None)
     if previous is None:
         return
     try:
         ipc.set("hwdec", previous)
     except IpcError:
         pass
+
+
+def hwdec_pids() -> list[int]:
+    """Players whose original decoding mode is still being held for them."""
+    return list(_PREV_HWDEC)
+
+
+def forget_hwdec(pid: int) -> None:
+    """Drop a departed player's saved mode without trying to restore it."""
+    _PREV_HWDEC.pop(pid, None)
 
 
 def player_config_dir(ipc: MpvIpc) -> Path | None:
@@ -508,6 +536,7 @@ def apply(
     *,
     announce: bool = False,
     info: dict[str, Any] | None = None,
+    pid: int | None = None,
 ) -> Path:
     # The caller has usually just read these; re-reading them costs another
     # round of IPC for values that cannot have changed in between.
@@ -533,11 +562,11 @@ def apply(
     # target" — nothing to gain there. Anything above that (even 1.2x) is a
     # real ask and should be applied, not silently dropped.
     if float(multi) <= 1.0:
-        remove(ipc)
+        remove(ipc, pid=pid)
         return script
     # Before the filter goes on: VapourSynth cannot read GPU-resident frames,
     # so a player left on plain auto/auto-safe would reject it.
-    ensure_copyback_hwdec(ipc)
+    ensure_copyback_hwdec(ipc, pid)
     _strip_other_vapoursynth(ipc)
     vf = current_filters(ipc)
     if FILTER_LABEL in vf or vf_is_fluid(vf):
@@ -564,7 +593,7 @@ def apply(
     return script
 
 
-def remove(ipc: MpvIpc, *, announce: bool = False) -> None:
+def remove(ipc: MpvIpc, *, announce: bool = False, pid: int | None = None) -> None:
     try:
         ipc.command("vf", "remove", FILTER_LABEL)
     except IpcError:
@@ -586,7 +615,7 @@ def remove(ipc: MpvIpc, *, announce: bool = False) -> None:
         except IpcError:
             continue
     # The filter is gone, so copy-back's GPU->CPU transfer is pure cost now.
-    restore_hwdec(ipc)
+    restore_hwdec(ipc, pid)
     if announce:
         try:
             ipc.command("show-text", "Fluid Motion  off", 1200)

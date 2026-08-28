@@ -6,7 +6,9 @@ mp.set_property("options/input-ipc-server", "fluid-mpv-" .. pid)
 local appdata = os.getenv("APPDATA") or ""
 local alive_path = appdata .. "\\FluidMotion\\alive"
 local hotkey_path = appdata .. "\\FluidMotion\\hotkey"
-local seek_hold_path = appdata .. "\\FluidMotion\\seek_hold"
+-- Per player. This was one shared file, so a seek here tore the filter off
+-- every other connected mpv as well and made them all sit out the debounce.
+local seek_hold_path = appdata .. "\\FluidMotion\\seek_hold-" .. pid
 -- Quiet period after a seek settles before re-applying the filter. Short on
 -- purpose: this is just debounce against still-dragging, not real work --
 -- the actual rebuild cost is entirely in apply() afterward.
@@ -159,4 +161,8 @@ mp.observe_property("seeking", "bool", function(_, seeking)
     arm_resume()
   end
 end)
+-- Now that the file carries a pid, quitting mid-seek would leave one behind
+-- for a pid that no longer exists. The watcher ignores anything older than
+-- SEEK_HOLD_MAX_AGE, so it was never wrong -- just litter that accumulates.
+mp.register_event("shutdown", clear_seek_hold)
 mp.add_key_binding("F3", "fluid-toggle", toggle_fluid)

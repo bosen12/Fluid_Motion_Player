@@ -877,7 +877,9 @@ def _tick_engine(monkeypatch, settings, ipc, pid=4321):
     monkeypatch.setattr(
         watcher_mod, "iter_mpv_processes", lambda: [PlayerProcess(pid=pid, name="mpv.exe")]
     )
-    monkeypatch.setattr(watcher_mod, "connect_pid", lambda p, extra=None: ipc)
+    monkeypatch.setattr(
+        watcher_mod, "connect_pid", lambda p, extra=None, **kw: ipc
+    )
     monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
     monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
     engine._runtime.ready = True
@@ -890,7 +892,7 @@ def _applied_profiles(monkeypatch, engine):
 
     seen: list[str] = []
 
-    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None):
+    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None, pid=None):
         seen.append(settings.profile)
         ipc.command("vf", "add", "@fluid:vapoursynth")
         return Path(mpv_root) / "shaders" / "fluid_rife.vpy"
@@ -916,13 +918,13 @@ def test_settings_change_skipped_by_seek_hold_is_reapplied_by_the_next_tick(monk
     assert seen == ["2x"]
 
     # The user picks 120 while the post-seek hold is still active.
-    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: True)
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: True)
     engine.update_settings(profile="120")
     assert seen == ["2x"], "an apply during the hold-off is skipped, by design"
 
     # The hold expires. The old filter is still loaded, so the pre-fix tick()
     # saw interpolation=True and did nothing at all -- forever.
-    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: False)
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: False)
     engine.tick()
     assert seen == ["2x", "120"], "the skipped change must be picked back up"
 
@@ -982,7 +984,7 @@ def test_no_op_multiplier_does_not_reapply_forever(monkeypatch, tmp_path):
     monkeypatch.setattr(
         watcher_mod,
         "apply",
-        lambda ipc_, s_, root_, announce=False, info=None: calls.append(s_.profile),
+        lambda ipc_, s_, root_, announce=False, info=None, pid=None: calls.append(s_.profile),
     )
 
     for _ in range(5):
@@ -998,12 +1000,12 @@ def test_rapid_setting_changes_converge_on_the_last_one(monkeypatch, tmp_path):
     seen = _applied_profiles(monkeypatch, engine)
 
     # Every one of these fails at the IPC layer except the last.
-    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: True)
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: True)
     for profile in ("3x", "4x", "144"):
         engine.update_settings(profile=profile)
     assert seen == [], "all four applies were skipped"
 
-    monkeypatch.setattr(engine, "_held_off", lambda seeking=False: False)
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: False)
     engine.tick()
     assert seen == ["144"], "the last selection wins, and it is actually applied"
     assert engine.settings.profile == "144"
@@ -1022,7 +1024,7 @@ def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
 
     attempts: list[int] = []
 
-    def failing(ipc_, s_, root_, announce=False, info=None):
+    def failing(ipc_, s_, root_, announce=False, info=None, pid=None):
         attempts.append(1)
         raise IpcError("mpv said no")
 
@@ -1053,7 +1055,7 @@ def test_pipe_closing_apply_is_not_surfaced_as_error(monkeypatch, tmp_path):
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def dying(ipc_, s_, root_, announce=False, info=None):
+    def dying(ipc_, s_, root_, announce=False, info=None, pid=None):
         raise IpcError("無法加入補幀濾鏡：(232, 'WriteFile', '管道正關閉中。')")
 
     monkeypatch.setattr(watcher_mod, "apply", dying)
@@ -1071,7 +1073,7 @@ def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def failing(ipc_, s_, root_, announce=False, info=None):
+    def failing(ipc_, s_, root_, announce=False, info=None, pid=None):
         raise IpcError("mpv said no")
 
     monkeypatch.setattr(watcher_mod, "apply", failing)
@@ -1130,7 +1132,7 @@ def test_remove_disconnect_is_not_surfaced_as_error(monkeypatch, tmp_path):
     settings = Settings(enabled=False, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def dying(ipc_, announce=False):
+    def dying(ipc_, announce=False, pid=None):
         raise IpcError("無法加入補幀濾鏡：(232, 'WriteFile', '管道正關閉中。')")
 
     monkeypatch.setattr(watcher_mod, "remove", dying)
@@ -1483,3 +1485,181 @@ def test_a_failed_write_does_not_destroy_the_previous_file(tmp_path, monkeypatch
 
     assert path.read_text(encoding="utf-8") == before
     assert not list(path.parent.glob("*.tmp")), "temp file left behind"
+
+
+def test_ambiguous_pipes_are_dropped_when_more_than_one_player_exists():
+    """mpvpipe/mpvsocket name no player in particular.
+
+    They are the only way in for someone whose mpv.conf sets a fixed
+    input-ipc-server, so a lone player still gets to try them. With two
+    players they are actively wrong: both pids resolve to the same pipe, so
+    the filter lands on one player twice and never on the other, and the
+    applied-settings bookkeeping is keyed to whichever pid connected first --
+    the same failure the pid-substring fix closed, through a door it left
+    open.
+    """
+    lone = candidate_pipes(4242, allow_ambiguous=True)
+    assert any(p.endswith("mpvpipe") for p in lone)
+    assert any(p.endswith("mpvsocket") for p in lone)
+
+    shared = candidate_pipes(4242, allow_ambiguous=False)
+    assert not any(p.endswith("mpvpipe") for p in shared)
+    assert not any(p.endswith("mpvsocket") for p in shared)
+    # The names that do identify the player survive either way.
+    assert any("fluid-mpv-4242" in p for p in shared)
+    assert any(p.endswith(r"\4242") for p in shared)
+
+
+def test_tick_refuses_ambiguous_pipes_once_a_second_player_appears(monkeypatch):
+    from fluid_motion.core import watcher as watcher_mod
+
+    seen: list[bool] = []
+
+    def spy(pid, extra=None, *, allow_ambiguous=True):
+        seen.append(allow_ambiguous)
+        return None
+
+    engine = watcher_mod.Engine(Settings())
+    monkeypatch.setattr(watcher_mod, "connect_pid", spy)
+    monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+
+    monkeypatch.setattr(
+        watcher_mod, "iter_mpv_processes",
+        lambda: [watcher_mod.PlayerProcess(pid=1, name="mpv.exe")],
+    )
+    engine.tick()
+    assert seen == [True], "a lone player should still try the generic names"
+
+    seen.clear()
+    monkeypatch.setattr(
+        watcher_mod, "iter_mpv_processes",
+        lambda: [
+            watcher_mod.PlayerProcess(pid=1, name="mpv.exe"),
+            watcher_mod.PlayerProcess(pid=2, name="mpv.exe"),
+        ],
+    )
+    engine.tick()
+    assert seen == [False, False], "two players must not guess at a shared pipe"
+
+
+def test_seek_hold_is_per_player():
+    """One shared file meant a seek in one player dropped the filter in all.
+
+    tick() reads the hold for the player it is reconciling, so with a single
+    file every connected mpv saw every other mpv's seek and sat out the
+    debounce with it.
+    """
+    from fluid_motion.paths import seek_hold_path
+
+    assert seek_hold_path(111) != seek_hold_path(222)
+    assert seek_hold_path(111).name == "seek_hold-111"
+    # The lua writes the same name.
+    lua = (Path(__file__).resolve().parent.parent
+           / "fluid_motion" / "resources" / "zz-fluid-ipc.lua").read_text(encoding="utf-8")
+    assert 'seek_hold-" .. pid' in lua
+
+
+def test_a_players_seek_does_not_hold_off_another_player():
+    import os
+    import time
+
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.paths import seek_hold_path
+
+    engine = watcher_mod.Engine(Settings())
+    hold = seek_hold_path(777)
+    hold.write_text("1", encoding="utf-8")
+    # Stamped rather than left at "now": NTFS records mtime at 100ns while
+    # time.time() ticks at ~15ms, so a file just written can read as very
+    # slightly in the future and interpolation_held_off's `0 <= age` guard
+    # then says "not held" -- a flake, not a fault.
+    recent = time.time() - 0.5
+    os.utime(hold, (recent, recent))
+    try:
+        assert engine._held_off(777) is True, "the seeking player is held off"
+        assert engine._held_off(888) is False, "its neighbour is not"
+    finally:
+        hold.unlink(missing_ok=True)
+
+
+def test_departed_player_does_not_leave_its_hwdec_behind():
+    """Keyed by pid, and cleared when the player goes.
+
+    It used to be keyed by ipc.path, which is not an identity: an mpv that
+    exits without a clean remove() leaves the entry, and the next player on
+    the same pipe name gets that stale mode restored onto it.
+    """
+    from fluid_motion.core.inject import forget_hwdec, hwdec_pids, restore_hwdec
+    from fluid_motion.core import inject as inject_mod
+
+    inject_mod._PREV_HWDEC.clear()
+    inject_mod._PREV_HWDEC[4321] = "auto-safe"
+    assert hwdec_pids() == [4321]
+
+    restored: list = []
+
+    class _Ipc:
+        path = r"\.\pipe\mpvsocket"
+
+        def set(self, name, value):
+            restored.append((name, value))
+
+        def get(self, name):
+            return "auto-copy"
+
+    # A different player that merely shares the pipe name must not inherit it.
+    restore_hwdec(_Ipc(), 9999)
+    assert restored == []
+    assert hwdec_pids() == [4321]
+
+    forget_hwdec(4321)
+    assert hwdec_pids() == []
+    restore_hwdec(_Ipc(), 4321)
+    assert restored == [], "a forgotten player has nothing to restore"
+
+
+def test_not_ready_is_reported_even_with_no_player_connected(monkeypatch):
+    """The readiness check used to sit inside the per-player loop.
+
+    With nothing connected the loop never ran, so the toggle flipped, the
+    config saved, and the UI said nothing about why interpolation had not
+    started. It also returned from inside the loop, skipping the trailing
+    tick().
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings())
+    engine._runtime.ready = False
+    monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(watcher_mod, "iter_mpv_processes", lambda: [])
+    assert engine._runtime.ready is False
+
+    engine.set_enabled(True)
+    assert "尚未就緒" in engine._error
+
+
+def test_snapshot_reads_vf_once(monkeypatch):
+    """It was fetched twice -- interpolation_active() and current_filters()
+    each asked -- for every player, three times a second."""
+    from fluid_motion.core.inject import snapshot_playback
+
+    reads: list[str] = []
+
+    class _Ipc:
+        path = "x"
+
+        def get(self, name):
+            reads.append(name)
+            if name == "vf":
+                return [{"name": "vapoursynth", "label": "fluid"}]
+            return None
+
+        def command(self, *a, **kw):
+            return None
+
+    info = snapshot_playback(_Ipc())
+    assert reads.count("vf") == 1, f"vf read {reads.count('vf')} times"
+    assert info["interpolation"] is True
+    assert "fluid" in info["vf"]

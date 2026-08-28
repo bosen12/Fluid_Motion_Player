@@ -14,6 +14,8 @@ from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
     SETTLE_SECONDS,
     apply,
+    forget_hwdec,
+    hwdec_pids,
     interpolation_held_off,
     is_settling,
     drop_ratio,
@@ -127,6 +129,7 @@ class Engine:
     ) -> None:
         self._on_change = on_change
         self._on_show = on_show
+        self._sweep_seek_holds()
         try:
             root = Path(self.settings.mpv_root)
             install_lua(root)
@@ -171,14 +174,35 @@ class Engine:
         except OSError:
             pass
 
-    def _seek_hold_age(self) -> float | None:
+    def _sweep_seek_holds(self) -> None:
+        """Once at start-up: drop the old shared file and any orphaned holds.
+
+        The lua removes its own on resume and on shutdown, but an mpv killed
+        mid-seek cannot. Nothing reads a stale one -- they age out past
+        SEEK_HOLD_MAX_AGE within two seconds -- so this is only about not
+        accumulating a file per pid ever seen.
+        """
         try:
-            return time.time() - seek_hold_path().stat().st_mtime
+            seek_hold_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            for stale in seek_hold_path().parent.glob("seek_hold-*"):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def _seek_hold_age(self, pid: int) -> float | None:
+        try:
+            return time.time() - seek_hold_path(pid).stat().st_mtime
         except OSError:
             return None
 
-    def _held_off(self, seeking: bool = False) -> bool:
-        return interpolation_held_off(seeking, self._seek_hold_age())
+    def _held_off(self, pid: int, seeking: bool = False) -> bool:
+        return interpolation_held_off(seeking, self._seek_hold_age(pid))
 
     def _mark_settling(self) -> None:
         self._settling_until = time.monotonic() + SETTLE_SECONDS
@@ -281,7 +305,7 @@ class Engine:
             # standalone mpv at the same time. Falls back to the setting when
             # mpv declines to answer.
             root = player_config_dir(ipc) or Path(self.settings.mpv_root)
-            apply(ipc, self.settings, root, announce=announce, info=info)
+            apply(ipc, self.settings, root, announce=announce, info=info, pid=pid)
         except IpcError as exc:
             gone = is_disconnect_error(str(exc))
             if not gone:
@@ -305,7 +329,7 @@ class Engine:
             self._invalidate(pid)
             return False
         try:
-            remove(ipc, announce=announce)
+            remove(ipc, announce=announce, pid=pid)
         except IpcError as exc:
             if not is_disconnect_error(str(exc)):
                 self._error = str(exc)
@@ -391,10 +415,15 @@ class Engine:
         live: dict[int, MpvIpc] = {}
         with self._lock:
             old = self._ipc
+        # With more than one player around, a pipe name that does not name a
+        # pid cannot tell them apart -- see _AMBIGUOUS_PIPES. It stays allowed
+        # for a lone player, where it is sometimes the only way in and cannot
+        # be pointing at anybody else.
+        allow_ambiguous = len(players) <= 1
         for player in players:
             ipc = old.get(player.pid)
             if ipc is None:
-                ipc = connect_pid(player.pid)
+                ipc = connect_pid(player.pid, allow_ambiguous=allow_ambiguous)
             if ipc is None:
                 continue
             try:
@@ -460,7 +489,7 @@ class Engine:
             player.playback_clean = playback_is_clean(player.realtime, player.drop_rate)
             live[player.pid] = ipc
             seeking = bool(info.get("seeking"))
-            held = self._held_off(seeking)
+            held = self._held_off(player.pid, seeking)
             want_multi = resolve_multi(info, self.settings)
             with self._lock:
                 applied = self._applied.get(player.pid)
@@ -502,6 +531,10 @@ class Engine:
                 self._realtime_seen.pop(pid, None)
             for pid in [p for p in self._drops if p not in live]:
                 self._drops.pop(pid, None)
+            # Nothing to restore it onto any more, and leaving it would hand
+            # this player's decoding mode to whoever inherits the pid later.
+            for pid in [p for p in hwdec_pids() if p not in live]:
+                forget_hwdec(pid)
             if not live:
                 self._error = ""
         now = time.monotonic()
@@ -532,16 +565,21 @@ class Engine:
         save_settings(self.settings)
         with self._lock:
             ipcs = list(self._ipc.items())
+        if enabled and not self._runtime.ready:
+            # Checked once, before the loop. It used to sit inside it, so with
+            # no player connected the loop never ran and the message was never
+            # set: the toggle flipped, the config saved, and the UI said
+            # nothing about why interpolation had not started. It also
+            # returned from inside the loop, skipping the trailing tick().
+            self._error = "TensorRT 執行環境尚未就緒"
+            return
         for pid, ipc in ipcs:
             if enabled:
-                if not self._runtime.ready:
-                    self._error = "TensorRT 執行環境尚未就緒"
-                    return
                 # Invalidate first: whether the apply below is skipped (hold-off),
                 # fails, or never runs at all, tick() has to be left able to see
                 # that this mpv is out of date and finish the job later.
                 self._invalidate(pid)
-                if self._held_off():
+                if self._held_off(pid):
                     self._error = ""
                     continue
                 try:

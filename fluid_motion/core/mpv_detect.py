@@ -191,16 +191,32 @@ def pipe_names_pid(raw: str, pid: int) -> bool:
     return name == needle or name.lower() == f"fluid-mpv-{needle}" or name.endswith(f"-{needle}")
 
 
-def candidate_pipes(pid: int, extra: Iterable[str] = ()) -> list[str]:
+# Pipe names an mpv can be reached on that say nothing about *which* mpv it
+# is. Someone whose mpv.conf sets input-ipc-server=mpvsocket is reachable
+# only through one of these, so they are worth trying -- but with two players
+# open they are actively wrong: both pids resolve to the same pipe, the filter
+# is applied twice to one player and never to the other, and the
+# applied-settings bookkeeping is keyed to whichever pid asked first. Same
+# failure the pid-substring fix closed, through a door it left open.
+_AMBIGUOUS_PIPES = (r"\\.\pipe\mpvpipe", r"\\.\pipe\mpvsocket")
+
+
+def candidate_pipes(pid: int, extra: Iterable[str] = (), *, allow_ambiguous: bool = True) -> list[str]:
+    """Pipes to try for this pid, best-identified first.
+
+    allow_ambiguous=False drops the names that cannot identify a player. The
+    watcher passes False whenever more than one player is present, which is
+    exactly when guessing costs something and never when it is the only way in.
+    """
     socket_path = str(windows_temp_dir() / "mpvSockets" / str(pid))
     names = [
         rf"\\.\pipe\fluid-mpv-{pid}",
-        rf"\\.\pipe\mpvpipe",
         rf"\\.\pipe\mpv-{pid}",
-        rf"\\.\pipe\mpvsocket",
         rf"\\.\pipe\{socket_path}",
         socket_path,
     ]
+    if allow_ambiguous:
+        names.extend(_AMBIGUOUS_PIPES)
     names.extend(extra)
     for raw in list_win_pipes():
         low = raw.lower()

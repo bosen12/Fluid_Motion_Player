@@ -408,9 +408,21 @@ function bind() {
   $("btn-quit").addEventListener("click", () => call("quit"));
 }
 
+// Nothing to repaint while the window is hidden, and hidden in the tray is
+// this app's normal state -- it is where --start-hidden opens and where the
+// close button leaves it. The poll used to keep running there, asking the
+// engine for a full state snapshot (which restats the mpv tree through
+// find_mpv_executable) every 0.9s for a surface nobody can see. Refreshing on
+// the way back in keeps the first visible frame current rather than up to
+// 0.9s stale.
 document.addEventListener("DOMContentLoaded", () => {
   bind();
   render(mock);
   refresh();
-  setInterval(refresh, 900);
+  setInterval(() => {
+    if (!document.hidden) refresh();
+  }, 900);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refresh();
+  });
 });
