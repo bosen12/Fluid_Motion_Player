@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fluid Motion — 即時補幀，裝在 mpv 裡面</title>
+<meta name="description" content="Windows 的即時補幀管理器：偵測正在跑的 mpv，注入 RIFE + TensorRT 的 VapourSynth 濾鏡，藏在系統匣。不是播放器。" />
+<meta property="og:title" content="Fluid Motion" />
+<meta property="og:description" content="mpv → pipe → vf @fluid → RIFE + TensorRT。即時補幀，裝在你已經在用的播放器裡面。" />
+<meta property="og:type" content="website" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&family=Tomorrow:wght@500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<a class="skip" href="#map">跳到主要內容</a>
+
+<!-- N2 · floating chip: this product lives in a corner of your screen -->
+<div class="chip">
+  <span class="chip__dot" aria-hidden="true"></span>
+  <span class="chip__name">Fluid Motion</span>
+  <span class="chip__ver" id="ver-chip">v1.4.7</span>
+  <a class="chip__cta" href="https://github.com/bosen12/Fluid_Motion_Player/releases/latest">下載</a>
+</div>
+
+<main>
+
+  <!-- Map / Diagram: a small orientation phrase, then the map itself -->
+  <section class="lede" id="map">
+    <p class="lede__kicker">Windows · NVIDIA · 不是播放器</p>
+    <h1 class="lede__h">補幀不在播放器旁邊跑，<br />它在播放器<span class="hl">裡面</span>跑。</h1>
+    <p class="lede__p">
+      Fluid Motion 待在系統匣，找到正在執行的 mpv，然後把一段 VapourSynth 濾鏡
+      注入它的影像鏈。RIFE 4.26 在 TensorRT 上補出中間幀，畫面從 mpv 自己送出來 ——
+      沒有第二個視窗，沒有轉檔，沒有另一個播放器。
+    </p>
+    <p class="lede__path" aria-hidden="true">
+      mpv <span>→</span> pipe <span>→</span> vf @fluid <span>→</span> RIFE + TensorRT <span>→</span> 你的螢幕
+    </p>
+  </section>
+
+  <!-- THE MAP -->
+  <section class="mapwrap">
+    <div class="map" id="pipeline" role="group" aria-label="管線圖，點選節點看說明">
+      <button class="node" type="button" data-node="mpv" aria-pressed="false">
+        <span class="node__i">01</span>
+        <span class="node__t">mpv</span>
+        <span class="node__s">你原本就在用的播放器</span>
+      </button>
+      <span class="edge" aria-hidden="true"></span>
+      <button class="node" type="button" data-node="pipe" aria-pressed="false">
+        <span class="node__i">02</span>
+        <span class="node__t">named pipe</span>
+        <span class="node__s">fluid-mpv-&lt;pid&gt;</span>
+      </button>
+      <span class="edge" aria-hidden="true"></span>
+      <button class="node" type="button" data-node="vf" aria-pressed="false">
+        <span class="node__i">03</span>
+        <span class="node__t">vf @fluid</span>
+        <span class="node__s">vapoursynth 濾鏡</span>
+      </button>
+      <span class="edge" aria-hidden="true"></span>
+      <button class="node" type="button" data-node="rife" aria-pressed="false">
+        <span class="node__i">04</span>
+        <span class="node__t">RIFE + TRT</span>
+        <span class="node__s">補出中間幀</span>
+      </button>
+      <span class="edge" aria-hidden="true"></span>
+      <button class="node node--out" type="button" data-node="out" aria-pressed="false">
+        <span class="node__i">05</span>
+        <span class="node__t">畫面</span>
+        <span class="node__s">從 mpv 自己送出</span>
+      </button>
+    </div>
+
+    <div class="mapnote" id="mapnote" aria-live="polite">
+      <p class="mapnote__idle">點選上面任何一個節點，看它實際在做什麼。</p>
+    </div>
+  </section>
+
+  <!-- Signature: what interpolation actually does -->
+  <section class="demo" id="demo">
+    <h2 class="sec__h">補幀到底在做什麼</h2>
+    <p class="sec__lede">
+      來源每兩張畫面之間，插進 <span class="mono">倍率 − 1</span> 張<strong>生成</strong>的畫面。
+      倍率只能是整數 —— vsmlrt 的 RIFE 收到 2.5 這種值不會報錯，但也不會多產生任何一張。
+    </p>
+
+    <div class="demo__ctl" role="group" aria-label="選擇倍率">
+      <button class="seg" type="button" data-multi="2" aria-pressed="true">2×</button>
+      <button class="seg" type="button" data-multi="3" aria-pressed="false">3×</button>
+      <button class="seg" type="button" data-multi="4" aria-pressed="false">4×</button>
+      <label class="demo__play">
+        <input type="checkbox" id="play" checked />
+        <span>播放</span>
+      </label>
+    </div>
+
+    <div class="strip" id="strip" aria-hidden="true"></div>
+
+    <dl class="demo__read" id="demo-read">
+      <div><dt>來源</dt><dd><span id="r-src">23.976</span> fps</dd></div>
+      <div><dt>輸出</dt><dd><span id="r-out">47.95</span> fps</dd></div>
+      <div><dt>每秒生成</dt><dd><span id="r-made">23.98</span> 張</dd></div>
+    </dl>
+    <p class="legend">
+      <span class="key key--src"></span>解碼出來的幀
+      <span class="key key--made"></span>RIFE 生成的幀
+    </p>
+  </section>
+
+  <!-- The honest table -->
+  <section class="real" id="real">
+    <h2 class="sec__h">這台機器扛得住哪些倍率</h2>
+    <p class="sec__lede">
+      補幀最常見的問題不是「能不能開」，是「開了會不會頓」。
+      下面是一次實測的完整結果，包含<strong>做不到的那幾格</strong> ——
+      因為那才是你需要知道的部分。
+    </p>
+
+    <div class="tablewrap">
+      <table class="tbl">
+        <caption>RTX 5070 Ti · 1080p · RIFE 4.26 · 真實 HEVC 片源。換一張卡、換解析度，結果就不一樣。</caption>
+        <thead>
+          <tr><th scope="col">倍率</th><th scope="col">目標</th><th scope="col">掉幀率</th><th scope="col">結論</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">2×</th><td>48 fps</td><td>—</td><td class="ok">輕鬆</td></tr>
+          <tr class="best"><th scope="row">3×</th><td>72 fps</td><td>0.3%</td><td class="ok">唯一乾淨的高倍率設定</td></tr>
+          <tr><th scope="row">4×</th><td>96 fps</td><td>75–83%</td><td class="no">不可用</td></tr>
+          <tr><th scope="row">5×（120）</th><td>120 fps</td><td>9.6%</td><td class="no">不可用</td></tr>
+          <tr><th scope="row">6×（144）</th><td>144 fps</td><td>—</td><td class="no">不可用</td></tr>
+          <tr><th scope="row">7×（螢幕）</th><td>168 fps</td><td>—</td><td class="no">不可用 · 播放速度 0.55×</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callouts">
+      <article class="callout">
+        <h3 class="callout__h">實時不等於流暢</h3>
+        <p>mpv 可以靠丟幀把時間軸拖住，於是「播放速度 1.00×」看起來很健康，畫面卻在頓。所以介面同時看兩件事：速度<em>和</em>丟幀率。上表 120 那一列就是這樣 —— 1.00× 但丟掉 9.6% 的幀。</p>
+      </article>
+      <article class="callout">
+        <h3 class="callout__h">4K 這台機器做不到</h3>
+        <p>播放速度掉到 0.32–0.55×。這不是設定問題，是算力不夠。與其讓你自己撞上去，不如先說。</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- first run -->
+  <section class="steps" id="start">
+    <h2 class="sec__h">第一次使用</h2>
+    <p class="sec__lede">
+      順序有意義：安裝時會<strong>直接問正在連線的播放器</strong>它的設定目錄在哪，
+      而不是猜測安裝路徑。這正是它能支援任意位置的 mpv、以及內嵌型播放器的原因。
+    </p>
+    <ol class="steps__list">
+      <li><span class="steps__n">1</span><div><h3>先開播放器，並且開始播放</h3><p>沒有播放器在跑時，它會退回設定檔裡的 <code>mpv_root</code>；若那裡也沒有 mpv 就直接中止，而不是把好幾 GB 裝到沒人會讀的地方。</p></div></li>
+      <li><span class="steps__n">2</span><div><h3>開啟 Fluid Motion</h3><p>介面上應該會顯示已接上該播放器。</p></div></li>
+      <li><span class="steps__n">3</span><div><h3>點「安裝 TensorRT 執行環境」</h3><p>總共約 3.5 GB：vs-mlrt TensorRT、RIFE 模型，必要時加上 VapourSynth。只需要做一次。</p></div></li>
+      <li><span class="steps__n">4</span><div><h3>完全退出並重開播放器</h3><p>mpv 只在啟動時載入腳本，所以這一步不能省。</p></div></li>
+      <li><span class="steps__n">5</span><div><h3>播影片，打開即時補幀</h3><p>或直接按 <code>F3</code>。第一個解析度會編譯 TensorRT engine（數十秒到數分鐘），之後同解析度走快取。</p></div></li>
+    </ol>
+  </section>
+
+  <!-- requirements + get -->
+  <section class="get" id="get">
+    <div class="get__grid">
+      <div>
+        <h2 class="sec__h">需求</h2>
+        <ul class="req">
+          <li><strong>Windows 10 / 11 x64</strong></li>
+          <li><strong>NVIDIA 顯示卡</strong><span>TensorRT；建議 RTX 20 系列以後</span></li>
+          <li><strong>任何以 mpv 為基礎的播放器</strong><span>原生 mpv、mpv.net，或內嵌 libmpv 的殼，例如 <a href="https://bosen12.github.io/AX_Player/">AX Player</a></span></li>
+        </ul>
+        <p class="req__note">
+          其他都不用先準備。舊版還要求 mpv 本身已含 VapourSynth，並自行設好
+          <code>hwdec=auto-copy</code> —— 這兩件事現在都自動處理：缺 VapourSynth 會補裝，
+          copy-back 解碼在補幀運作期間透過 IPC 切換、停止時還原。
+        </p>
+      </div>
+      <div class="dl">
+        <p class="dl__tag">下載</p>
+        <h3 class="dl__h">FluidMotion.exe</h3>
+        <p class="dl__d">單一檔案，不需要安裝。關閉視窗會藏到系統匣。</p>
+        <a class="btn btn--solid" href="https://github.com/bosen12/Fluid_Motion_Player/releases/latest">取得最新版</a>
+        <a class="btn btn--ghost" href="https://github.com/bosen12/Fluid_Motion_Player">看原始碼</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Ft5 · statement -->
+<footer class="close">
+  <p class="close__say">開了就開了，<br />不需要再想它。</p>
+  <ul class="close__links">
+    <li><a href="https://github.com/bosen12/Fluid_Motion_Player">GitHub</a></li>
+    <li><a href="https://github.com/bosen12/Fluid_Motion_Player/releases">所有版本</a></li>
+    <li><a href="https://bosen12.github.io/AX_Player/">AX Player</a></li>
+    <li><a href="https://github.com/AmusementClub/vs-mlrt">vs-mlrt</a></li>
+    <li><a href="https://mpv.io">mpv.io</a></li>
+  </ul>
+  <p class="close__fine">
+    原始碼 MIT 授權 · 2026 bosen12。RIFE、vs-mlrt、mpv、VapourSynth 各依其自身授權；
+    首次安裝時下載的 TensorRT / CUDA 執行檔為 <strong>NVIDIA 授權，不在 MIT 範圍內</strong>，詳見 NOTICE。
+    本頁不使用 cookie，沒有追蹤。
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

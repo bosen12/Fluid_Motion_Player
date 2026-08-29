@@ -32,3 +32,6 @@ progress.md
 .vscode/
 *.log
 AppData/
+
+# Local preview-server config for the docs/ site. Machine-specific.
+.claude/
