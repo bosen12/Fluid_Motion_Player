@@ -1757,3 +1757,27 @@ def test_the_ui_does_not_gate_its_poll_on_document_hidden():
               / "fluid_motion" / "ui" / "app.js").read_text(encoding="utf-8")
     assert "setInterval(refresh, 900)" in app_js
     assert "document.hidden" not in app_js.split("DOMContentLoaded")[-1]
+
+
+def test_player_media_title_is_not_interpolated_into_html():
+    """media-title is attacker-controlled text, and it went into innerHTML raw.
+
+    mpv takes media-title from the file's own metadata, not from its name, so
+    it carries whatever the container says. Measured with a real file: an mkv
+    remuxed with -metadata title='<img src=x onerror=alert(1)>' makes mpv
+    report exactly that string, which renderPlayers then wrote straight into
+    the document. An <img onerror> inserted through innerHTML does run, and it
+    runs with window.pywebview.api in scope -- quit(), clear_engine_cache(),
+    start_setup() (a 3.5 GB download), open_engine_cache() (os.startfile).
+
+    A network stream is the worse case: there the title comes from the far end
+    rather than from a file the user chose to keep.
+    """
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "${p.media ||" not in js, "media-title must not be interpolated into innerHTML raw"
+    assert "function escapeHtml" in js, "no escaping helper to route untrusted text through"
+    assert "escapeHtml(" in js, "the player card must escape the media title"
+    # The player card is the only place untrusted text meets innerHTML --
+    # everything else in this file goes through textContent. Counting the
+    # assignments, not the word, so a comment mentioning it cannot move this.
+    assert js.count("innerHTML =") == 4, "a new innerHTML site needs the same review"

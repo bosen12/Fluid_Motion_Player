@@ -61,6 +61,13 @@ def _sync_playback_props(ipc: MpvIpc) -> None:
 
 
 def _vf_arg(script: Path | None = None) -> str:
+    # `script` is deliberately unused (test_vf_arg_uses_label pins that):
+    # the path is always the ~~/-relative one, and ~~ is *the player's own
+    # config dir*. That is the constraint on the caller -- apply() has to be
+    # handed the config dir of the mpv that will load this, or write_vpy()
+    # puts the .vpy in one place while this points at another and mpv says
+    # only "could not init VS". player_config_dir(ipc) is that value; the
+    # settings.mpv_root fallback is right only when the two agree.
     # Use ~~ so the path has no drive colon; mpv splits vf args on ':'.
     # concurrent-frames must stay 1: RIFE is temporal; parallel requests tile-flicker.
     return f'{FILTER_LABEL}:vapoursynth="~~/shaders/fluid_rife.vpy":4:1'

@@ -80,6 +80,20 @@ function setPressed(el, on) {
   el.setAttribute("aria-pressed", on ? "true" : "false");
 }
 
+// media-title is not the file name: mpv reads it from the container's own
+// metadata, so it carries whatever the file (or, for a stream, the far end)
+// says. Measured with an mkv remuxed to carry
+// title='<img src=x onerror=alert(1)>' -- mpv reports that string verbatim,
+// and an <img onerror> written through innerHTML runs, with
+// window.pywebview.api in scope. Everything else in this file uses
+// textContent; this is the one place a string has to become markup.
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(
+    /[&<>"']/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
+  );
+}
+
 function renderPlayers(players) {
   const root = $("players");
   if (!players.length) {
@@ -91,7 +105,7 @@ function renderPlayers(players) {
       const res = p.width ? `${p.width}×${p.height}` : "";
       return `<article class="player" data-active="${p.connected && p.interpolation}">
         <div class="player-name"><span>mpv</span><span>${p.connected ? "已連線" : "未連線"}</span></div>
-        <div class="player-media">${p.media || res || "pid " + p.pid}</div>
+        <div class="player-media">${escapeHtml(p.media || res || "pid " + p.pid)}</div>
       </article>`;
     })
     .join("");
