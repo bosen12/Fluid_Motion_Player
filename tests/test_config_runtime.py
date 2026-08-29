@@ -1179,7 +1179,15 @@ def test_in_flight_poll_cannot_repaint_stale_settings_over_a_command():
 
 
 def test_build_bat_does_not_report_success_after_a_failed_build():
-    bat = Path("build.bat").read_text(encoding="utf-8")
+    # Anchored to this file, not to the cwd. A bare Path("build.bat") read
+    # whichever build.bat the process happened to be started in: launched from
+    # the sibling AX Player checkout it opened *that* project's, and the worse
+    # case is not the crash -- it is a build.bat that happens to contain these
+    # four strings in this order, which would turn this green without Fluid
+    # Motion's own file ever being opened. Every other file this suite reads
+    # already anchors on __file__, resources_dir() or ui_dir(); this was the
+    # one that did not.
+    bat = (Path(__file__).resolve().parent.parent / "build.bat").read_text(encoding="utf-8")
     built = bat.index("echo Built:")
     guard = bat.index("if not exist dist\\FluidMotion.exe goto :failed")
     assert guard < built, "the success message must be gated on the exe existing"
