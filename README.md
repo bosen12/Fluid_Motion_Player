@@ -2,8 +2,6 @@
 
 [English](#english) · [中文](#中文)
 
-**介紹網頁 → <https://bosen12.github.io/Fluid_Motion_Player/>**
-
 Realtime **RIFE 4.6** frame interpolation for **mpv**, accelerated with **TensorRT + CUDA**. A tray app in the style of SVP4: auto-detects mpv, injects a VapourSynth filter, hides in the Windows notification area.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
