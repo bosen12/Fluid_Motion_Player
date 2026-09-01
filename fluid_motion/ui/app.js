@@ -103,9 +103,30 @@ function renderPlayers(players) {
   root.innerHTML = players
     .map((p) => {
       const res = p.width ? `${p.width}×${p.height}` : "";
-      return `<article class="player" data-active="${p.connected && p.interpolation}">
-        <div class="player-name"><span>mpv</span><span>${p.connected ? "已連線" : "未連線"}</span></div>
+      // p.label, not a hardcoded "mpv": with two players open both cards used
+      // to be identical, and for an embedded host (AX Player) the label was
+      // wrong on top of being ambiguous.
+      const name = escapeHtml(p.label || p.name || "mpv");
+      // The filter is written into and loaded from the player's *own* config
+      // dir, so that is the directory whose readiness decides whether this
+      // player can interpolate -- not the one the checklist panel shows.
+      const blocked = p.connected && p.ready === false;
+      const notes = [];
+      if (blocked) {
+        notes.push(
+          `<div class="player-note" data-kind="blocked">此播放器的設定目錄尚未安裝執行環境：${escapeHtml(
+            p.missing || ""
+          )}<br><span class="player-dir">${escapeHtml(p.config_dir || "")}</span></div>`
+        );
+      } else if (p.connected && p.needs_restart) {
+        notes.push(
+          `<div class="player-note">已為此播放器安裝 F3 控制腳本，重新開啟播放器後生效</div>`
+        );
+      }
+      return `<article class="player" data-active="${p.connected && p.interpolation}" data-blocked="${blocked}">
+        <div class="player-name"><span>${name}</span><span>${p.connected ? "已連線" : "未連線"}</span></div>
         <div class="player-media">${escapeHtml(p.media || res || "pid " + p.pid)}</div>
+        ${notes.join("")}
       </article>`;
     })
     .join("");

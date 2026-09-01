@@ -40,6 +40,23 @@ class RuntimeStatus:
         }
 
 
+MODEL_CHECKS = frozenset({"rife46", "rife425", "rife426"})
+
+
+def missing_labels(status: RuntimeStatus) -> list[str]:
+    """The checks actually standing between this directory and `ready`.
+
+    The three RIFE model checks collapse into one entry: only one of them has
+    to pass for `ready`, so listing all three reads as three separate problems
+    when it is one. Written for the per-player readiness line, which has room
+    for a short list and not for the full panel.
+    """
+    labels = [c.label for c in status.checks if not c.ok and c.id not in MODEL_CHECKS]
+    if not any(c.ok for c in status.checks if c.id in MODEL_CHECKS):
+        labels.append("RIFE 模型")
+    return labels
+
+
 def _exists(path: Path) -> bool:
     return path.is_file()
 

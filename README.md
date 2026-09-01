@@ -74,6 +74,18 @@ lets this work with an mpv in any location and with embedded hosts. With no
 player running it falls back to the configured `mpv_root`, and refuses
 rather than installing several GB somewhere no player will read.
 
+That directory is also what decides whether a player can interpolate at all,
+so readiness is reported **per player**: a player whose own config directory
+has no runtime is shown as blocked, with what it is missing, and the filter
+is never pushed into it. (It used to be pushed anyway whenever the
+*configured* root happened to be complete -- mpv accepts the filter, fails to
+construct it, and ends up with no video stream selected at all.)
+
+The small IPC script that binds F3 and debounces seeks is installed into each
+connected player's config directory as well, not only the configured one.
+Restart that player once afterwards: mpv loads scripts only at launch, and
+the UI says so on the player's card.
+
 The first resolution compiles a TensorRT engine (a few minutes). Later plays at the same size reuse the cache (`%APPDATA%\FluidMotion\engines`).
 
 mpv hotkey **F3** toggles the filter. Existing bindings (for example F2) are left alone.
@@ -149,6 +161,15 @@ build.bat
 而不是猜測安裝路徑——這正是它能支援任意位置的 mpv 以及內嵌型播放器的原因。
 沒有播放器在跑時會退回設定檔裡的 `mpv_root`，若該處也找不到 mpv 就直接中止，
 而不是把好幾 GB 裝進一個沒有播放器會讀的地方。
+
+那個目錄同時也決定了一個播放器到底能不能補幀，所以就緒狀態是**逐播放器**判斷的：
+自己的設定目錄沒有執行環境的播放器會顯示為未就緒並列出缺什麼，濾鏡不會被送進去。
+（以前只要**設定檔裡**那個 root 剛好是完整的就會照送——mpv 會收下濾鏡、然後建構失敗，
+最後連影片軌都沒有了。）
+
+負責綁定 F3 與 seek 防抖的 IPC 小腳本，現在也會裝進每個連線播放器自己的設定目錄，
+不再只裝設定檔裡那一個。裝完請把該播放器重開一次：mpv 只在啟動時載入腳本，
+播放器卡片上會提示。
 
 第一個解析度會編譯 TensorRT engine（可能數分鐘），之後同解析度走快取。
 

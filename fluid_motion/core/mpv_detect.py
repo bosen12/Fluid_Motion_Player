@@ -16,12 +16,50 @@ from fluid_motion.paths import default_mpv_root
 PLAYER_NAMES = {"mpv.exe", "mpv.com", "mpvnet.exe", "mpv.net.exe"}
 
 
+# What to call each player on screen. The process name is only what the OS
+# knows it as, and for a host that embeds libmpv that is whatever wraps it --
+# "python.exe" for AX Player run from source, "AXPlayer.exe" when packaged.
+# The UI called every player "mpv" regardless, which is wrong for all of them
+# except mpv, and leaves two open players looking identical.
+_PLAYER_LABELS = {
+    "mpv.exe": "mpv",
+    "mpv.com": "mpv",
+    "mpvnet.exe": "mpv.net",
+    "mpv.net.exe": "mpv.net",
+    "axplayer.exe": "AX Player",
+}
+
+
+def display_label(name: str, exe: str = "") -> str:
+    known = _PLAYER_LABELS.get((name or "").lower())
+    if known:
+        return known
+    stem = Path(exe).stem if exe else ""
+    if stem and stem.lower() not in ("python", "pythonw"):
+        return stem
+    # An embedded host we cannot name from its process. Still better than
+    # "mpv", which is the one thing it is definitely not.
+    return "內嵌播放器"
+
+
 @dataclass
 class PlayerProcess:
     pid: int
     name: str
     exe: str = ""
+    label: str = ""
     title: str = ""
+    # The config dir this player itself reports over IPC -- the directory the
+    # .vpy is written into and loaded from, which is not necessarily the one
+    # settings.mpv_root points at. See Engine._player_root.
+    config_dir: str = ""
+    # Whether *that* directory has a usable TensorRT runtime. Defaults True so
+    # a player we have not diagnosed yet is never blocked by this.
+    ready: bool = True
+    missing: str = ""
+    # Set when the IPC script was installed into this player's config dir
+    # while it was already running: mpv only loads scripts at launch.
+    needs_restart: bool = False
     pipe: str = ""
     connected: bool = False
     media: str = ""
@@ -143,7 +181,7 @@ def iter_mpv_processes() -> list[PlayerProcess]:
             except (psutil.Error, OSError):
                 exe = ""
             pid = int(proc.info["pid"])
-            found.append(PlayerProcess(pid=pid, name=name, exe=exe))
+            found.append(PlayerProcess(pid=pid, name=name, exe=exe, label=display_label(name, exe)))
             seen.add(pid)
         except (psutil.Error, TypeError, ValueError):
             continue
@@ -154,7 +192,7 @@ def iter_mpv_processes() -> list[PlayerProcess]:
             exe = proc.exe() or ""
         except (psutil.Error, OSError):
             name, exe = "embedded-mpv", ""
-        found.append(PlayerProcess(pid=pid, name=name, exe=exe))
+        found.append(PlayerProcess(pid=pid, name=name, exe=exe, label=display_label(name, exe)))
         seen.add(pid)
     found.sort(key=lambda item: item.pid)
     return found

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -441,6 +443,77 @@ _PREV_HWDEC: dict[int, str] = {}
 _COPYBACK_HWDEC = "auto-copy"
 
 
+def _hwdec_state_path() -> Path:
+    from fluid_motion.paths import roaming_dir
+
+    return roaming_dir() / "hwdec_state.json"
+
+
+def _write_hwdec_state() -> None:
+    """Mirror the saved modes to disk so a crash does not strand a player.
+
+    The map only ever lived in memory, and nothing else knows the original
+    value: the lua strips a stale @fluid when this app stops answering its
+    heartbeat, but it has no idea what hwdec was before and never touches it.
+    So a Fluid Motion that is killed while interpolating leaves the player on
+    copy-back for the rest of its life -- paying the GPU->CPU transfer for a
+    filter that is no longer there, with no symptom beyond "it got slower".
+    Observed exactly that against a live player while testing.
+
+    Process start time is stored alongside the pid because a pid on its own is
+    not an identity across a restart of this app.
+    """
+    payload = {}
+    for pid, value in _PREV_HWDEC.items():
+        payload[str(pid)] = {"hwdec": value, "started": _process_started(pid)}
+    try:
+        path = _hwdec_state_path()
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _process_started(pid: int) -> float | None:
+    try:
+        import psutil
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:  # noqa: BLE001 -- identity is a nicety, not a requirement
+        return None
+
+
+def stranded_hwdec() -> dict[int, str]:
+    """Players a previous run left on copy-back, by pid.
+
+    Only entries whose process is still the one we saved for: a pid alone can
+    be reused, and restoring a stale mode onto somebody else's player would be
+    this bug with the sign flipped.
+    """
+    try:
+        raw = json.loads(_hwdec_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, str] = {}
+    for key, entry in raw.items():
+        if not isinstance(entry, dict) or not str(key).isdigit():
+            continue
+        pid = int(key)
+        value = entry.get("hwdec")
+        if not isinstance(value, str) or not value:
+            continue
+        started = entry.get("started")
+        if isinstance(started, (int, float)):
+            live = _process_started(pid)
+            if live is None or abs(live - float(started)) > 1.0:
+                continue
+        out[pid] = value
+    return out
+
+
 def _hwdec_text(value: Any) -> str:
     """hwdec is a *priority list* option, so mpv hands it back as a list.
 
@@ -491,6 +564,7 @@ def ensure_copyback_hwdec(ipc: MpvIpc, pid: int | None = None) -> None:
         return
     if pid is not None:
         _PREV_HWDEC[pid] = _hwdec_text(current)
+        _write_hwdec_state()
 
 
 def restore_hwdec(ipc: MpvIpc, pid: int | None = None) -> None:
@@ -500,10 +574,35 @@ def restore_hwdec(ipc: MpvIpc, pid: int | None = None) -> None:
     previous = _PREV_HWDEC.pop(pid, None)
     if previous is None:
         return
+    _write_hwdec_state()
     try:
         ipc.set("hwdec", previous)
     except IpcError:
         pass
+
+
+def flush_hwdec_state() -> None:
+    """Make the file say exactly what the live map says.
+
+    The map is the single writer: everything that should survive is in it, and
+    anything dropped from it is meant to be gone. Startup recovery ends with
+    one call to this rather than rewriting per pid, so a record it decided to
+    keep and one it decided to restore cannot end up in different states.
+    """
+    _write_hwdec_state()
+
+
+def adopt_hwdec(pid: int, previous: str) -> None:
+    """Take over a saved mode from a previous run of this app.
+
+    For a player that still has the filter loaded when we start up: it is
+    legitimately on copy-back and must stay there, but the value to put back
+    when the filter finally comes off only exists in the file the last run
+    wrote. Without adopting it, remove() would find nothing to restore and the
+    player would be stranded anyway -- just later.
+    """
+    _PREV_HWDEC.setdefault(pid, previous)
+    _write_hwdec_state()
 
 
 def hwdec_pids() -> list[int]:
@@ -513,7 +612,8 @@ def hwdec_pids() -> list[int]:
 
 def forget_hwdec(pid: int) -> None:
     """Drop a departed player's saved mode without trying to restore it."""
-    _PREV_HWDEC.pop(pid, None)
+    if _PREV_HWDEC.pop(pid, None) is not None:
+        _write_hwdec_state()
 
 
 def player_config_dir(ipc: MpvIpc) -> Path | None:

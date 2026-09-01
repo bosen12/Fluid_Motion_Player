@@ -37,11 +37,10 @@ class MpvIpc:
         self._handle = None
         if handle is None:
             return
+        # Both a win32 pipe handle and a socket close the same way; the two
+        # branches this used to have were identical.
         try:
-            if self.kind == "pipe":
-                handle.close()
-            else:
-                handle.close()
+            handle.close()
         except OSError:
             pass
 

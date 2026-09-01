@@ -14,11 +14,15 @@ from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
 from fluid_motion.core.inject import (
     SEEK_HOLD_MAX_AGE,
     SETTLE_SECONDS,
+    adopt_hwdec,
     apply,
+    flush_hwdec_state,
     forget_hwdec,
+    interpolation_active,
     hwdec_pids,
     interpolation_held_off,
     is_settling,
+    stranded_hwdec,
     drop_ratio,
     filtered_output_fps,
     live_fps_label,
@@ -35,7 +39,7 @@ from fluid_motion.core.inject import (
 )
 from fluid_motion.core.mpv_detect import PlayerProcess, find_mpv_executable, iter_mpv_processes, mpv_root_from
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
-from fluid_motion.core.runtime import diagnose
+from fluid_motion.core.runtime import RuntimeStatus, diagnose, missing_labels
 from fluid_motion.core.vs_script import effective_backend, parse_fps, target_multi
 
 ENGINE_GROWTH_GRACE = 3.0
@@ -94,6 +98,20 @@ class Engine:
         self._engine_bytes = self._engine_cache.total_bytes
         self._engine_growing_until = 0.0
         self._housekeeping_at = 0.0
+        # Readiness of each *player's own* config dir, which is the directory
+        # the filter is actually written into and loaded from -- not
+        # settings.mpv_root, which is only where the UI's panel looks. Cached
+        # by directory (two players can share one) and refreshed with the rest
+        # of the housekeeping; diagnose() measures 0.33ms, so the cache is
+        # about not doing it three times a second rather than about cost.
+        self._runtime_cache: dict[str, RuntimeStatus] = {}
+        # config-dir per pid. mpv answers this over IPC and it cannot change
+        # while the process lives, so it is asked once rather than every tick.
+        self._config_dirs: dict[int, Path] = {}
+        self._player_ready: dict[int, tuple[bool, str]] = {}
+        # Config dirs whose IPC script has been checked/installed this session.
+        self._scripted: set[str] = set()
+        self._needs_restart: set[int] = set()
         # Guards apply()/remove() specifically: tick() (background thread)
         # and set_enabled()/update_settings() (pywebview bridge thread) both
         # decide independently whether to re-apply, and a slow apply() (mpv
@@ -131,6 +149,7 @@ class Engine:
         self._on_change = on_change
         self._on_show = on_show
         self._sweep_seek_holds()
+        self._recover_stranded_hwdec()
         try:
             root = Path(self.settings.mpv_root)
             install_lua(root)
@@ -205,6 +224,45 @@ class Engine:
         except OSError:
             pass
 
+    def _recover_stranded_hwdec(self) -> None:
+        """Undo a previous run's copy-back switch on players still running.
+
+        Only reachable when the last run did not get to remove() -- killed,
+        crashed, or the machine went down mid-playback. The lua takes the
+        stale filter off by itself once this app stops answering its
+        heartbeat, but it has no way to know what hwdec was before, so the
+        player would otherwise stay on copy-back for the rest of its life.
+
+        Skipped for any player that still has our filter loaded: that one is
+        legitimately on copy-back and about to be adopted by this run.
+        """
+        stranded = stranded_hwdec()
+        if not stranded:
+            return
+        for pid, previous in stranded.items():
+            ipc = connect_pid(pid)
+            if ipc is None:
+                # Not answering. Keep the record rather than discarding the
+                # only copy of the mode -- it gets another chance next run,
+                # and stranded_hwdec() drops it once the process is gone.
+                adopt_hwdec(pid, previous)
+                continue
+            try:
+                if interpolation_active(ipc):
+                    # Still filtered, so copy-back is still needed. Carry the
+                    # value forward instead of restoring it now, or remove()
+                    # would later find nothing to put back.
+                    adopt_hwdec(pid, previous)
+                    continue
+                ipc.set("hwdec", previous)
+            except IpcError:
+                adopt_hwdec(pid, previous)
+            finally:
+                ipc.close()
+        # One write, from the map, now that every record has been decided:
+        # what was restored is absent from it and what was kept is in it.
+        flush_hwdec_state()
+
     def _seek_hold_age(self, pid: int) -> float | None:
         """Age of this player's hold, falling back to the pre-v1.4.5 name.
 
@@ -230,6 +288,57 @@ class Engine:
 
     def _held_off(self, pid: int, seeking: bool = False) -> bool:
         return interpolation_held_off(seeking, self._seek_hold_age(pid))
+
+    def _player_root(self, pid: int, ipc: MpvIpc) -> Path:
+        """The config dir this player will load the filter from.
+
+        Asked of mpv itself, because one configured mpv_root cannot answer it
+        for everyone: an embedded host runs out of its own runtime folder and
+        a standalone mpv lives wherever it was installed. Falls back to the
+        setting only when mpv declines to answer.
+        """
+        cached = self._config_dirs.get(pid)
+        if cached is not None:
+            return cached
+        root = player_config_dir(ipc) or Path(self.settings.mpv_root)
+        self._config_dirs[pid] = root
+        return root
+
+    def _runtime_for(self, root: Path) -> RuntimeStatus:
+        key = str(root)
+        status = self._runtime_cache.get(key)
+        if status is None:
+            status = diagnose(root)
+            self._runtime_cache[key] = status
+        return status
+
+    def _ensure_player_scripts(self, root: Path, pid: int) -> None:
+        """Put the IPC script in this player's own config dir.
+
+        start() installs it into settings.mpv_root and nothing else ever did,
+        so a player running out of any other directory never got it: no F3
+        binding (AX Player's own toolbar button sends F3 and was therefore a
+        silent no-op -- confirmed against a live instance, which reported no
+        F3 binding at all), no post-seek hold-off, and no stale-filter
+        cleanup when this app goes away.
+
+        Only ever adds a missing file; an existing one is left alone. mpv
+        loads scripts at launch, so a player that is already running has to be
+        restarted before it takes effect -- which is what needs_restart says.
+        """
+        key = str(root)
+        if key in self._scripted:
+            return
+        self._scripted.add(key)
+        if (root / "scripts" / "zz-fluid-ipc.lua").is_file():
+            return
+        try:
+            install_lua(root)
+            ensure_input_binding(root)
+        except OSError as exc:
+            self._error = str(exc)
+            return
+        self._needs_restart.add(pid)
 
     def _mark_settling(self) -> None:
         self._settling_until = time.monotonic() + SETTLE_SECONDS
@@ -461,6 +570,14 @@ class Engine:
                 continue
             player.pipe = ipc.path
             player.connected = True
+            root = self._player_root(player.pid, ipc)
+            self._ensure_player_scripts(root, player.pid)
+            status = self._runtime_for(root)
+            player.config_dir = str(root)
+            player.ready = status.ready
+            player.missing = "、".join(missing_labels(status))
+            player.needs_restart = player.pid in self._needs_restart
+            self._player_ready[player.pid] = (status.ready, player.missing)
             player.media = str(info.get("media") or "")
             player.width = int(info.get("width") or 0)
             player.height = int(info.get("height") or 0)
@@ -531,7 +648,7 @@ class Engine:
                         player.interpolation = False
                 else:
                     self._invalidate(player.pid)
-            elif self.settings.enabled and self._runtime.ready:
+            elif self.settings.enabled and player.ready:
                 # Stale settings, not just a missing filter. multi <= 1 is a
                 # legitimately applied no-op (nothing left to interpolate), so it
                 # must not read as "filter missing" and re-apply every tick.
@@ -559,6 +676,13 @@ class Engine:
                 self._realtime_seen.pop(pid, None)
             for pid in [p for p in self._drops if p not in live]:
                 self._drops.pop(pid, None)
+            for pid in [p for p in self._config_dirs if p not in seen_pids]:
+                self._config_dirs.pop(pid, None)
+            for pid in [p for p in self._player_ready if p not in seen_pids]:
+                self._player_ready.pop(pid, None)
+            # A restarted player is a new pid, which is exactly the signal
+            # that the script it was missing has now been loaded.
+            self._needs_restart.intersection_update(seen_pids)
             # Against the processes that were *seen*, not the ones that
             # answered. Everything else swept here is recoverable -- dropping
             # _applied just re-applies next tick -- but the saved hwdec is
@@ -587,6 +711,10 @@ class Engine:
             self._engine_bytes = cache.total_bytes
             gpu = gpu_snapshot()
             runtime = diagnose(self.settings.mpv_root)
+            # Dropped rather than refreshed in place: the next tick re-reads
+            # only the dirs it actually has players in, and a directory that
+            # became ready (the installer just finished) has to be picked up.
+            self._runtime_cache.clear()
             with self._lock:
                 self._gpu = gpu
                 self._runtime = runtime
@@ -600,16 +728,32 @@ class Engine:
         save_settings(self.settings)
         with self._lock:
             ipcs = list(self._ipc.items())
-        if enabled and not self._runtime.ready:
+        if enabled and not ipcs and not self._runtime.ready:
             # Checked once, before the loop. It used to sit inside it, so with
             # no player connected the loop never ran and the message was never
             # set: the toggle flipped, the config saved, and the UI said
             # nothing about why interpolation had not started. It also
             # returned from inside the loop, skipping the trailing tick().
+            #
+            # Only when nothing is connected. With a player present its own
+            # config dir is the one that decides, and settings.mpv_root being
+            # ready says nothing about it -- that mismatch is what let the
+            # filter be pushed into a player that could not load it.
             self._error = "TensorRT 執行環境尚未就緒"
             return
         for pid, ipc in ipcs:
             if enabled:
+                ready, missing = self._player_ready.get(pid, (True, ""))
+                if not ready:
+                    # Applying anyway is not a worse message, it is a broken
+                    # video: mpv accepts the vf, fails to construct the filter
+                    # ("Failed to load VapourSynth VSScript library"), and ends
+                    # up with no video or audio stream selected at all.
+                    label = next(
+                        (p.label or p.name for p in self._players if p.pid == pid), "播放器"
+                    )
+                    self._error = f"{label} 的設定目錄尚未安裝執行環境：{missing}"
+                    continue
                 # Invalidate first: whether the apply below is skipped (hold-off),
                 # fails, or never runs at all, tick() has to be left able to see
                 # that this mpv is out of date and finish the job later.
