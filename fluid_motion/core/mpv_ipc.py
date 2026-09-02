@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 from typing import Any
 
@@ -31,6 +32,16 @@ class MpvIpc:
         # reassembles it instead of throwing the fragment away and then failing
         # to parse the fused line that follows.
         self._buf = b""
+        # One connection, four threads: the watcher tick, the pywebview bridge
+        # (set_enabled -> rate_snapshot, then a second full tick), the hotkey
+        # loop and the bootstrap thread all reach the same pipe. Nothing above
+        # serialises them -- _apply_lock only covers apply/remove, never the
+        # reads. Unserialised, two commands interleave their writes, `_req`
+        # hands both the same id, and whichever thread drains the buffer first
+        # consumes *and discards* the other's reply (the request_id mismatch
+        # below falls through to `continue`). The loser then blocks to its
+        # deadline and reports a timeout that never happened on the wire.
+        self._lock = threading.Lock()
 
     def close(self) -> None:
         handle = self._handle
@@ -45,6 +56,20 @@ class MpvIpc:
             pass
 
     def command(self, *args: Any, timeout: float = 2.5) -> Any:
+        # The caller's own deadline doubles as the queueing budget: it already
+        # decided how long this command is worth waiting for, and a command
+        # that cannot get the connection in that time has failed for the same
+        # reason it would have timed out anyway. Refusing here is safe because
+        # snapshot_playback now reports an unreadable `vf` as unknown rather
+        # than as "no filter loaded".
+        if not self._lock.acquire(timeout=timeout):
+            raise IpcError("mpv IPC busy")
+        try:
+            return self._command_locked(*args, timeout=timeout)
+        finally:
+            self._lock.release()
+
+    def _command_locked(self, *args: Any, timeout: float) -> Any:
         payload = {"command": list(args), "request_id": self._req}
         self._req += 1
         raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")

@@ -366,7 +366,18 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     # times a second for a value that had just been read -- and the docstring
     # on rate_snapshot puts a round trip at ~15ms while mpv is busy running
     # the filter.
-    vf_raw = _get("vf")
+    # Read separately from _get: this is the one property whose *failure*
+    # changes a decision. vf_is_fluid(None) is False, which is
+    # indistinguishable from a genuine "no filter loaded", so a busy mpv --
+    # the one compiling a TensorRT engine, i.e. the one least able to cope --
+    # used to read as "the filter fell off" and get another vf add every
+    # APPLY_RETRY_BACKOFF. Report "could not ask" as its own state.
+    vf_ok = True
+    try:
+        vf_raw = ipc.get("vf")
+    except IpcError:
+        vf_raw = None
+        vf_ok = False
     interpolating = vf_is_fluid(vf_raw)
     source = live_source_fps(container, estimated, interpolating)
     return {
@@ -386,6 +397,10 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
         "speed": float(speed) if isinstance(speed, (int, float)) and speed > 0 else 1.0,
         "drops": float(drops) if isinstance(drops, (int, float)) else None,
         "vf": format_filters(vf_raw),
+        # False means `interpolation` above is a guess, not a reading. Absent
+        # from rate_snapshot on purpose: that one is only reached from a user
+        # click, which applies unconditionally and never asks "is it missing".
+        "vf_ok": vf_ok,
     }
 
 

@@ -648,6 +648,14 @@ class Engine:
                         player.interpolation = False
                 else:
                     self._invalidate(player.pid)
+            elif not info.get("vf_ok", True):
+                # The vf read failed, so player.interpolation is a default and
+                # not a reading -- "filter missing" and "mpv did not answer"
+                # look identical from here. Acting on it would send a vf add
+                # into an mpv that is merely busy (compiling an engine, wedged
+                # vo), which is when it can least afford one. Leave the
+                # recorded state alone; the next tick decides on a real answer.
+                pass
             elif self.settings.enabled and player.ready:
                 # Stale settings, not just a missing filter. multi <= 1 is a
                 # legitimately applied no-op (nothing left to interpolate), so it

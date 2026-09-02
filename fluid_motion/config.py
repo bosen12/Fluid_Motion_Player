@@ -112,10 +112,17 @@ def save_settings(settings: Settings, path: Path | None = None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(
-            json.dumps(settings.to_dict(), indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        # os.replace alone is atomic against a dying *process*, not against a
+        # dying *machine*: NTFS can journal the rename ahead of the data blocks,
+        # so a power cut can land a zero-length config.json -- the exact input
+        # the docstring above says must not be reachable. Flushing the bytes
+        # before the rename closes that. Affordable here because this runs on a
+        # settings change, not on a poll; AX Player's resume.py deliberately
+        # does not do the same, because that one rewrites every 5 seconds.
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(settings.to_dict(), indent=2, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, target)
     except OSError:
         try:

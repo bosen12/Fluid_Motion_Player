@@ -132,9 +132,17 @@ function renderPlayers(players) {
     .join("");
 }
 
+// Escaped even though every label in runtime.py is built from literals today:
+// Check.detail is already assembled from str() of whatever the probe found (an
+// mpv error string, a path), so the day a label carries one of those this stops
+// being a formality. The guard test counts escapeHtml() calls against
+// interpolations rather than counting innerHTML sites, so a raw hole added here
+// fails the suite instead of waiting for the data to turn hostile.
 function renderChecks(checks) {
   $("checks").innerHTML = (checks || [])
-    .map((c) => `<span class="check" data-ok="${c.ok}">${c.label}</span>`)
+    .map(
+      (c) => `<span class="check" data-ok="${escapeHtml(c.ok)}">${escapeHtml(c.label)}</span>`
+    )
     .join("");
 }
 

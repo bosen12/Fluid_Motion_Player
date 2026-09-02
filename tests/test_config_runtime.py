@@ -1,3 +1,5 @@
+import builtins
+import re
 from pathlib import Path
 
 import pytest
@@ -1427,13 +1429,25 @@ def _writes_land_on(monkeypatch, destination: Path) -> list[Path]:
     moment it is opened.
     """
     written: list[Path] = []
-    real = Path.write_text
+    real_write_text = Path.write_text
+    real_open = builtins.open
 
-    def spy(self, *args, **kwargs):
+    def spy_write_text(self, *args, **kwargs):
         written.append(Path(self))
-        return real(self, *args, **kwargs)
+        return real_write_text(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", spy)
+    # Both routes, because "writes through Path.write_text" is not the property
+    # under test -- "the bytes never land on `destination`" is. A writer that
+    # needs the file handle itself (to fsync before the rename, as
+    # save_settings does) goes through open() and would otherwise be invisible
+    # here, leaving the test asserting nothing while still passing.
+    def spy_open(file, mode="r", *args, **kwargs):
+        if any(ch in mode for ch in "wax+"):
+            written.append(Path(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy_write_text)
+    monkeypatch.setattr(builtins, "open", spy_open)
     return written
 
 
@@ -1785,7 +1799,32 @@ def test_player_media_title_is_not_interpolated_into_html():
     assert "${p.media ||" not in js, "media-title must not be interpolated into innerHTML raw"
     assert "function escapeHtml" in js, "no escaping helper to route untrusted text through"
     assert "escapeHtml(" in js, "the player card must escape the media title"
-    # The player card is the only place untrusted text meets innerHTML --
-    # everything else in this file goes through textContent. Counting the
-    # assignments, not the word, so a comment mentioning it cannot move this.
-    assert js.count("innerHTML =") == 4, "a new innerHTML site needs the same review"
+
+
+def test_no_externally_sourced_field_reaches_html_unescaped():
+    """The count-based guard this replaces asserted the wrong thing.
+
+    It read `js.count("innerHTML =") == 4` under the comment "the player card
+    is the only place untrusted text meets innerHTML" -- true of the *data* at
+    the time, never of the *sinks*: renderChecks was already a second raw sink
+    at the moment that line was written. A fixed count also passes a swap (one
+    site removed, one added) and misses `innerHTML=` without the space.
+
+    So check what actually matters: every interpolation that carries a field
+    originating outside this file has to go through escapeHtml in the same
+    hole. Adding `${c.detail}` to a check label -- runtime.py already builds
+    detail from str() of an mpv error or a path -- fails here.
+    """
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    holes = re.findall(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", js)
+    assert holes, "no template interpolations found -- the regex stopped matching"
+    external = (
+        "p.media", "p.label", "p.name", "p.missing", "p.config_dir",
+        "c.label", "c.detail", "c.ok", "gpu.name", "state.error",
+    )
+    for hole in holes:
+        for field in external:
+            if field in hole:
+                assert "escapeHtml(" in hole, (
+                    f"{field} is interpolated without escapeHtml: ${{{hole}}}"
+                )

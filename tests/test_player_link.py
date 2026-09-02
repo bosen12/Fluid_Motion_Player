@@ -357,3 +357,31 @@ def test_every_connected_player_gets_the_script_check(monkeypatch, engine_with_p
     engine.tick()
 
     assert checked == [(PLAYER_ROOT, 99)]
+
+
+# -- an unreadable vf is not an absent filter ------------------------------
+def test_a_player_whose_vf_cannot_be_read_is_left_alone(monkeypatch, engine_with_player):
+    """`vf_is_fluid(None)` is False, which reads exactly like "no filter".
+
+    The mpv that cannot answer is the one busy compiling a TensorRT engine, so
+    treating silence as "the filter fell off" sends it a fresh vf add every
+    APPLY_RETRY_BACKOFF -- precisely when it can least afford one. The control
+    for this is test_a_ready_player_is_still_filtered_from_its_own_directory:
+    same fixture, same readiness, vf readable and empty, and it *does* apply.
+    """
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    engine, ipc = engine_with_player(player_ready=True)
+    applied = _record_apply(monkeypatch)
+
+    def _vf_is_unreadable(name):
+        if name == "vf":
+            raise IpcError("mpv IPC timed out")
+        return ipc.props.get(name)
+
+    ipc.get = _vf_is_unreadable
+
+    engine.tick()
+
+    assert applied == [], "re-applied on the strength of a reading that never arrived"
+    assert ipc.commands == [], "a vf command went to an mpv that was not answering"
