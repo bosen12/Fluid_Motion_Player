@@ -1830,3 +1830,80 @@ def test_no_externally_sourced_field_reaches_html_unescaped():
                 assert "escapeHtml(" in hole, (
                     f"{field} is interpolated without escapeHtml: ${{{hole}}}"
                 )
+
+
+# -- a download that stopped early is not a download -----------------------
+class _TruncatedResponse:
+    """A server that declares more than it delivers, then hangs up."""
+
+    def __init__(self, payload: bytes, declared: int):
+        self._chunks = [payload, b""]
+        self.headers = {"Content-Length": str(declared)}
+
+    def read(self, _size=-1):
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def test_a_truncated_archive_is_refused_rather_than_cached_forever(monkeypatch, tmp_path):
+    """read() returning empty ends the loop whether the body finished or the
+    connection was cut, so a short response was renamed onto dest looking
+    complete -- and _download's own "already cached" check is size > 0, so
+    every retry after that returned instantly with the broken file in place.
+
+    Demonstrated against a real HTTP server declaring 5 MB and sending 1: no
+    error, 1 MB at dest, second call reports 已快取. On the 2.6 GB TensorRT
+    archive that is an install which can never succeed and never re-fetches,
+    with nothing pointing at the download cache as the thing to delete.
+
+    The byte count was already being computed for the progress bar and simply
+    never compared.
+    """
+    from fluid_motion.core import bootstrap
+
+    monkeypatch.setattr(
+        bootstrap.urllib.request,
+        "urlopen",
+        lambda _req, timeout=None: _TruncatedResponse(b"x" * 1000, declared=5000),
+    )
+
+    dest = tmp_path / "vsmlrt-tensorrt.7z"
+    with pytest.raises(RuntimeError, match="不完整"):
+        bootstrap._download("https://example/x", dest, None, "TensorRT", (0.0, 1.0))
+
+    assert not dest.exists(), "a truncated archive was renamed into place"
+
+
+def test_a_complete_archive_still_lands(monkeypatch, tmp_path):
+    from fluid_motion.core import bootstrap
+
+    monkeypatch.setattr(
+        bootstrap.urllib.request,
+        "urlopen",
+        lambda _req, timeout=None: _TruncatedResponse(b"y" * 2048, declared=2048),
+    )
+
+    dest = tmp_path / "models.7z"
+    bootstrap._download("https://example/x", dest, None, "models", (0.0, 1.0))
+
+    assert dest.stat().st_size == 2048
+
+
+def test_a_server_that_declares_no_length_is_not_second_guessed(monkeypatch, tmp_path):
+    """Chunked responses carry no Content-Length; there is nothing to compare
+    against, so the check has to stand down rather than reject everything."""
+    from fluid_motion.core import bootstrap
+
+    resp = _TruncatedResponse(b"z" * 512, declared=512)
+    resp.headers = {}
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda _req, timeout=None: resp)
+
+    dest = tmp_path / "scripts.7z"
+    bootstrap._download("https://example/x", dest, None, "scripts", (0.0, 1.0))
+
+    assert dest.stat().st_size == 512

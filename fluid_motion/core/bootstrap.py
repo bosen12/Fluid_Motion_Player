@@ -180,6 +180,21 @@ def _download(url: str, dest: Path, cb: Progress | None, label: str, span: tuple
                 if total:
                     local = done / total
                     _progress(cb, f"下載 {label}  {done / 1e6:.0f}/{total / 1e6:.0f} MB", span[0] + (span[1] - span[0]) * local)
+    # The server said how much it was sending, and until now that was only
+    # used to draw the progress bar. read() returning empty ends the loop
+    # whether the body finished or the connection was cut, so a truncated
+    # response was renamed onto dest looking complete -- and the "already
+    # cached" check at the top is size > 0, so every retry after that returned
+    # instantly with the broken file still in place. Demonstrated against a
+    # server declaring 5 MB and sending 1: no error, 1 MB at dest, second call
+    # reports 已快取. On the 2.6 GB TensorRT archive that is an install that
+    # can never succeed and never re-fetches, with nothing pointing at the
+    # download cache as the thing to delete.
+    if total and done != total:
+        raise RuntimeError(
+            f"{label} 下載不完整（收到 {done / 1e6:.1f} MB，應為 {total / 1e6:.1f} MB）。"
+            "請重試。"
+        )
     tmp.replace(dest)
     _progress(cb, f"完成 {label}", span[1])
 
