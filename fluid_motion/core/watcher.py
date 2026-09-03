@@ -1003,11 +1003,20 @@ class Engine:
         return fallback
 
     def start_bootstrap(self) -> None:
-        if self._bootstrapping:
-            return
+        # Claimed here rather than as _run()'s first line. Setting it there
+        # still lets start_bootstrap() return -- and the bridge answer
+        # get_state() with running=False -- before the new thread has run at
+        # all, and the UI only disables the button from that polled state, so
+        # a second call spawns a second 3.5 GB download into the same cache
+        # and extracts it over the first. The window is one thread start and
+        # has not been seen in the wild; claiming it under the lock the flag
+        # is already read under costs nothing and removes the reasoning.
+        with self._lock:
+            if self._bootstrapping:
+                return
+            self._bootstrapping = True
 
         def _run() -> None:
-            self._bootstrapping = True
             self._error = ""
             try:
                 from fluid_motion.core.bootstrap import install_runtime

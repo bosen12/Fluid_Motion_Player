@@ -71,3 +71,28 @@ def test_an_apply_after_stop_does_not_re_add_the_filter(engine, monkeypatch):
     applied.clear()
     assert engine._apply_to(4321, ipc, 2) is False
     assert applied == [], "an apply that won the lock after stop() reached mpv"
+
+
+def test_start_bootstrap_claims_before_it_spawns(engine, monkeypatch):
+    """A second click must not start a second 3.5 GB download.
+
+    The guard has to be taken before the thread exists, not on the thread:
+    the bridge answers get_state() the moment start_bootstrap() returns, and
+    the UI disables the button only from that polled reading.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    spawned: list[str] = []
+
+    class _NeverRuns:
+        def __init__(self, *a, **kw):
+            spawned.append(kw.get("name", ""))
+
+        def start(self):
+            """A thread that has been created but has not been scheduled yet."""
+
+    monkeypatch.setattr(watcher_mod.threading, "Thread", _NeverRuns)
+
+    engine.start_bootstrap()
+    engine.start_bootstrap()
+    assert spawned == ["fluid-bootstrap"], f"spawned {len(spawned)} installers"
