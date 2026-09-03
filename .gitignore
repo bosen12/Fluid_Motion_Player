@@ -19,8 +19,16 @@ FluidMotion.exe
 engines/
 downloads/
 
-# mpv live caches if a full portable folder is copied in
-mpv/watch_later/
+# A local portable mpv, if one is copied in here for convenience.
+#
+# The whole folder, not just its caches. A 110 MB mpv.exe used to be committed
+# through Git LFS and nothing ever read it -- mpv_root_candidates() looks at
+# C:\mpv, ProgramFiles, ~/mpv, the AX Player runtime, scoop, chocolatey and
+# PATH, never at the repo. GitHub's free LFS allowance is 1 GB of bandwidth a
+# month, so that one file put a hard ceiling of roughly nine clones on the
+# project before `git clone` started failing for everyone. Removed from
+# history; this keeps it from coming back.
+mpv/
 
 # Local agent / editor
 .hallmark/

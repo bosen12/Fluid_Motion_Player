@@ -4,4 +4,3 @@
 *.png binary
 *.ico binary
 *.exe binary
-mpv/mpv.exe filter=lfs diff=lfs merge=lfs -text
