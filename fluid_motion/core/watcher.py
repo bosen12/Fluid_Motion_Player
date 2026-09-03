@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings, save_settings
+from fluid_motion.log import log, log_exc
 from fluid_motion.paths import engine_cache_dir, heartbeat_path, hotkey_path, seek_hold_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
 from fluid_motion.core.engine_cache import (
@@ -103,6 +104,7 @@ class Engine:
         self._ipc: dict[int, MpvIpc] = {}
         self._players: list[PlayerProcess] = []
         self._gpu = gpu_snapshot()
+        self._logged_backend = ""
         self._runtime = diagnose(settings.mpv_root, backend=self._backend())
         self._error = ""
         self._bootstrap_message = ""
@@ -163,6 +165,18 @@ class Engine:
     ) -> None:
         self._on_change = on_change
         self._on_show = on_show
+        # The header of every bug report: what this machine is, what it
+        # resolved to, and where it is going to look. Written once at start,
+        # so a log opened weeks later still says which build produced it.
+        from fluid_motion import __version__
+        log(
+            f"--- Fluid Motion {__version__} start"
+            f"  adapters={detect_adapters()}"
+            f"  backend={self._backend()}(setting={self.settings.backend})"
+            f"  mpv_root={self.settings.mpv_root}"
+            f"  enabled={self.settings.enabled} profile={self.settings.profile}"
+            f" model={self.settings.rife_model}"
+        )
         self._sweep_seek_holds()
         self._recover_stranded_hwdec()
         try:
@@ -321,7 +335,19 @@ class Engine:
 
     def _backend(self) -> str:
         """The backend that will actually be generated for this machine."""
-        return resolve_backend(self.settings.backend, available_vendors())
+        backend = resolve_backend(self.settings.backend, available_vendors())
+        # Logged here rather than at the call sites because this is the one
+        # place the answer cannot be reached around. Only on a change: this
+        # runs several times per tick, and the point of the log is the line
+        # that mattered, not three a second saying nothing moved.
+        if backend != self._logged_backend:
+            log(
+                f"backend: {self._logged_backend or '(none)'} -> {backend}"
+                f"  setting={self.settings.backend}"
+                f"  adapters={detect_adapters()}"
+            )
+            self._logged_backend = backend
+        return backend
 
     def _runtime_for(self, root: Path) -> RuntimeStatus:
         # Keyed by backend as well as directory: what "ready" requires differs
@@ -497,6 +523,7 @@ class Engine:
             gone = is_disconnect_error(str(exc))
             if not gone:
                 self._error = str(exc)
+                log(f"apply failed pid={pid} backend={backend}: {exc}")
             with self._lock:
                 self._applied.pop(pid, None)
                 if not gone:
@@ -520,6 +547,7 @@ class Engine:
         except IpcError as exc:
             if not is_disconnect_error(str(exc)):
                 self._error = str(exc)
+                log(f"remove failed pid={pid}: {exc}")
             return False
         finally:
             self._apply_lock.release()
@@ -570,6 +598,7 @@ class Engine:
                 self._consume_hotkey()
             except Exception as exc:  # noqa: BLE001 — keep the poller alive
                 self._error = str(exc)
+                log_exc("hotkey loop")
 
     def _loop(self) -> None:
         # Waking this early when the seek hold clears was tried, on the
@@ -583,6 +612,7 @@ class Engine:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 — keep the watcher alive
                 self._error = str(exc)
+                log_exc("watcher tick")
             if self._on_change:
                 try:
                     self._on_change()
@@ -628,7 +658,15 @@ class Engine:
             player.ready = status.ready
             player.missing = "、".join(missing_labels(status))
             player.needs_restart = player.pid in self._needs_restart
-            self._player_ready[player.pid] = (status.ready, player.missing)
+            previous = self._player_ready.get(player.pid)
+            current = (status.ready, player.missing)
+            if previous != current:
+                log(
+                    f"player {player.pid} ({player.label}) ready={status.ready}"
+                    f"  dir={root}"
+                    + (f"  missing={player.missing}" if player.missing else "")
+                )
+            self._player_ready[player.pid] = current
             player.media = str(info.get("media") or "")
             player.width = int(info.get("width") or 0)
             player.height = int(info.get("height") or 0)
@@ -969,6 +1007,7 @@ class Engine:
             except Exception as exc:  # noqa: BLE001
                 self._error = str(exc)
                 self._bootstrap_message = f"安裝失敗：{exc}"
+                log_exc("bootstrap")
             finally:
                 self._bootstrapping = False
 

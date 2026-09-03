@@ -15,3 +15,13 @@ def isolated_appdata(tmp_path, monkeypatch):
     means every test gets this for free; nobody has to remember to ask for it.
     """
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    # The log resolves its path once and keeps it in a module global, so the
+    # env var alone is not enough: whichever test logs first pins the
+    # directory, and the other two hundred write into that one's tmp_path.
+    # Not destructive on its own -- the real %APPDATA% is never reached, and
+    # that was checked -- but it makes a test that reads the log see other
+    # tests' lines, and it is one refactor away from being destructive. AX
+    # Player's conftest resets its equivalent for the same reason.
+    from fluid_motion import log as log_mod
+
+    monkeypatch.setattr(log_mod, "_log_path", None)

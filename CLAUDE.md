@@ -173,9 +173,19 @@ The distribution copy the owner keeps lives at `C:\Fluid_Motion`
 - UI copy is Traditional Chinese; code and comments are English.
 - Comments are narrative and explain **why** — especially why a constant has
   its value. Match that.
-- **There is no logging anywhere in `fluid_motion/`** — no `import logging`, no
-  log file. `paths.debug_log_path()` exists but is deliberately unused. For a
-  background tray app with broad `except Exception` teardown blocks, that is a
-  real diagnosability gap; diagnostics currently reach the user only through
-  status strings in the UI.
+- **Diagnostics go through `fluid_motion/log.py`**, not the stdlib `logging`
+  module — one file, one format, no configuration surface to get wrong. Same
+  shape as AX Player's `debug_log.py`, rotation included, so the two projects'
+  logs read alike.
+
+  It exists because v1.6.0 shipped an AMD path nobody could test and asked
+  users to report back; a report needs something to report. **Log state
+  *changes*, never state** — the watcher ticks three times a second, and a
+  line per tick buries the one that mattered. Verified: 300 steady ticks write
+  zero lines. `_backend()` is where a backend change is recorded, because it
+  is the one place the answer cannot be reached around.
+
+  `tests/conftest.py` resets `log._log_path` for the same reason it redirects
+  `APPDATA`: the path is cached in a module global, so without the reset
+  whichever test logs first pins the directory for all the others.
 - Don't commit `dist/`, `build/`, `*.exe`, `*.onnx`, or TensorRT engines.
