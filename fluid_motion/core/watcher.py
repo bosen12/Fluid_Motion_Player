@@ -147,7 +147,7 @@ class Engine:
         # plus the smoothed ratios built from them. Both speed and drop rate
         # can only be had by differencing two observations, so they have to be
         # carried across ticks.
-        self._realtime_seen: dict[int, tuple[float, float, float]] = {}
+        self._realtime_seen: dict[int, tuple[float, float | None, float]] = {}
         self._realtime: dict[int, float] = {}
         self._drops: dict[int, float] = {}
         self._in_hotkey = False
@@ -418,8 +418,16 @@ class Engine:
             self._realtime_seen.pop(pid, None)
             return
         now = time.monotonic()
+        # A reading or nothing, never a zero. The counter is cumulative, so
+        # standing 0.0 in for a property mpv did not answer hands the *next*
+        # sample a delta of the whole counter: measured at 9725% against a
+        # 60fps target, and the 0.35 smoothing then needs 6.9s to walk that
+        # back -- all of it spent telling the user that healthy playback is
+        # dropping frames. Skipping the pair costs two drop samples instead.
+        # Same reasoning as vf_ok in snapshot_playback: "could not ask" is an
+        # answer of its own, and must not be spelled like a measurement.
         drops = info.get("drops")
-        drops = float(drops) if isinstance(drops, (int, float)) else 0.0
+        drops = float(drops) if isinstance(drops, (int, float)) else None
         last = self._realtime_seen.get(pid)
         self._realtime_seen[pid] = (float(pos), drops, now)
         if last is None:
@@ -434,11 +442,12 @@ class Engine:
         )
         if ratio is not None:
             self._realtime[pid] = ratio
-        dropped = drop_ratio(
-            drops - last_drops, elapsed, target_fps, previous=self._drops.get(pid)
-        )
-        if dropped is not None:
-            self._drops[pid] = dropped
+        if drops is not None and last_drops is not None:
+            dropped = drop_ratio(
+                drops - last_drops, elapsed, target_fps, previous=self._drops.get(pid)
+            )
+            if dropped is not None:
+                self._drops[pid] = dropped
 
     def _filter_key(self, multi: int, backend: str | None = None) -> tuple:
         """Everything that changes the generated .vpy, plus the resolved multi.
