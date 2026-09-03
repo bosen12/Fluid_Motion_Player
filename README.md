@@ -18,12 +18,22 @@ Fluid Motion is **not** a video player. It sits in the tray, finds running `mpv.
 
 `vf add @fluid:vapoursynth=shaders/fluid_rife.vpy`
 
-The `.vpy` script runs `vsmlrt.RIFE(model=46, backend=Backend.TRT)` inside mpv.
+The `.vpy` script runs `vsmlrt.RIFE(...)` inside mpv, on whichever inference
+backend your GPU can use.
 
 ### Requirements
 
 - Windows 10/11 x64
-- NVIDIA GPU (TensorRT). RTX 20-series and newer recommended
+- A GPU, and the backend is picked for you:
+  - **NVIDIA** — TensorRT. RTX 20-series and newer recommended. This is the
+    path with real measurements behind it.
+  - **AMD** — ncnn over Vulkan. ⚠️ **Untested on AMD hardware.** Nobody working
+    on this project has an AMD card, so while the code path is complete and the
+    install is verified, whether RIFE actually interpolates on an AMD GPU has
+    no runtime evidence. If you try it, a report either way is genuinely
+    useful — attach `%APPDATA%\FluidMotion\fluid_debug.log`.
+  - A machine with both reports both; NVIDIA wins, and you can override it in
+    the app.
 - Any mpv-based player — plain [mpv](https://mpv.io), mpv.net, or a host that
   embeds libmpv such as [AX Player](https://github.com/bosen12/AX_Player)
 
@@ -38,9 +48,10 @@ handled for you:
   and restored when it stops. VapourSynth cannot read a GPU-resident frame,
   so this used to fail silently whenever `mpv.conf` said otherwise.
 
-**Install TensorRT runtime** downloads roughly 3.5 GB in total (vs-mlrt
-TensorRT, RIFE models, and VapourSynth if needed) into the config directory
-of the player you are running — start playback first so it can ask the
+The install button downloads into the config directory of the player you are
+running — roughly 3.5 GB on NVIDIA (vs-mlrt TensorRT, RIFE models, and
+VapourSynth if needed). On AMD it is far smaller: the ncnn plugin is a single
+2.7 MB file, because Vulkan itself comes from your display driver — start playback first so it can ask the
 player where that is.
 
 ### Run from source
@@ -110,12 +121,18 @@ RIFE, vs-mlrt, mpv, VapourSynth, NVIDIA TensorRT — see [NOTICE](NOTICE). Tenso
 
 ## 中文
 
-Windows 即時補幀管理器：用 **RIFE 4.6 + TensorRT / CUDA** 對 **mpv** 補幀。控制台可藏到系統匣，自動偵測已開啟的 mpv。
+Windows 即時補幀管理器：用 **RIFE** 對 **mpv** 補幀，依顯示卡自動選用推論後端。控制台可藏到系統匣，自動偵測已開啟的 mpv。
 
 ### 需求
 
 - Windows 10/11 64 位
-- NVIDIA 顯示卡（建議 RTX 20 以後）
+- 一張顯示卡,後端會自動選:
+  - **NVIDIA** —— TensorRT（建議 RTX 20 以後）。這是有實測數據的路徑。
+  - **AMD** —— ncnn / Vulkan。⚠️ **未經 AMD 實機驗證。** 這個專案沒有人有 AMD
+    顯示卡,程式路徑完整、安裝流程也驗證過,但 RIFE 到底能不能在 AMD GPU 上
+    補幀,沒有任何執行期證據。如果你試了,**不論成功或失敗都請回報**——附上
+    `%APPDATA%\FluidMotion\fluid_debug.log` 即可。
+  - 兩張都有的機器兩者都會偵測到,**以 NVIDIA 優先**,也可以在程式裡手動指定。
 - 任何以 mpv 為基礎的播放器——原生 [mpv](https://mpv.io)、mpv.net，或內嵌
   libmpv 的殼（例如 [AX Player](https://github.com/bosen12/AX_Player)）
 
@@ -128,9 +145,10 @@ Windows 即時補幀管理器：用 **RIFE 4.6 + TensorRT / CUDA** 對 **mpv** �
 - **copy-back 解碼**：補幀運作期間透過 IPC 切換，停止時還原。VapourSynth 無法
   讀取 GPU 常駐的影格，以前 `mpv.conf` 設定不同就會靜默失敗。
 
-點 **安裝 TensorRT 執行環境** 總共約下載 3.5 GB（vs-mlrt TensorRT、RIFE 模型，
-必要時加上 VapourSynth），裝進你**正在使用的播放器**的設定目錄——請先開始播放，
-它才問得到那個目錄在哪。
+按下安裝鈕會裝進你**正在使用的播放器**的設定目錄——請先開始播放，它才問得到
+那個目錄在哪。NVIDIA 約下載 3.5 GB（vs-mlrt TensorRT、RIFE 模型，必要時加上
+VapourSynth）；AMD 小很多,ncnn 外掛只有單一個 2.7 MB 的檔案,因為 Vulkan 本身
+由顯示卡驅動提供。
 
 ### 從原始碼執行
 
