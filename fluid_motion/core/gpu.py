@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from fluid_motion.core.proc import run_hidden
@@ -86,6 +88,23 @@ def detect_adapters(*, refresh: bool = False) -> list[str]:
         pass
     _ADAPTERS = names
     return list(names)
+
+
+def vulkan_available() -> bool:
+    """Whether the Vulkan loader is installed.
+
+    ncnn's Vulkan backend resolves vulkan-1.dll at runtime, so without it the
+    filter constructs and then fails -- and mpv reports that as nothing more
+    useful than "could not init VS". Every vendor's desktop driver installs the
+    loader into System32, so its absence means Vulkan genuinely is not there
+    rather than that it lives somewhere else.
+
+    Deliberately not a ctypes LoadLibrary: loading a graphics loader into the
+    tray process to ask whether it exists is a side effect nobody asked for,
+    and the file test answers the same question.
+    """
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    return (Path(system_root) / "System32" / "vulkan-1.dll").is_file()
 
 
 def available_vendors(*, refresh: bool = False) -> set[str]:

@@ -37,6 +37,13 @@ function backendLabel(resolved) {
   return resolved === "ncnn" ? "ncnn · Vulkan" : "TensorRT · CUDA";
 }
 
+// The same thing in prose. Every sentence that used to say "TensorRT" ran on
+// an AMD machine too, where it named a runtime that is neither installed nor
+// wanted -- and told the user to install it.
+function backendName(resolved) {
+  return resolved === "ncnn" ? "ncnn / Vulkan" : "TensorRT";
+}
+
 const mock = {
   settings: {
     enabled: false,
@@ -295,10 +302,19 @@ function render(state) {
   const connected = state.connected || 0;
   $("live").dataset.on = connected > 0 ? "true" : "false";
   $("live-text").textContent = connected > 0 ? "已接上 mpv" : "等待 mpv";
-  $("gpu-name").textContent = state.gpu.available ? state.gpu.name : "未偵測到 NVIDIA GPU";
+  // nvidia-smi is the only source of the live telemetry, but it is no longer
+  // the only source of a *name*: an AMD machine has no nvidia-smi and was told
+  // "未偵測到 NVIDIA GPU" while the ncnn backend was set to run its filter.
+  const adapterName = (state.adapters || [])[0] || "";
+  $("gpu-name").textContent = state.gpu.available
+    ? state.gpu.name
+    : adapterName || "未偵測到 GPU";
   const gpuMode = $("gpu-mode");
   if (gpuMode) {
-    if (!state.gpu.available) {
+    // The safe/accelerated badge is the RTX 50 CUDA-graph gate and says nothing
+    // about ncnn, which has no CUDA graphs to turn off. Showing it there would
+    // be a reading about a feature that is not in play.
+    if (!state.gpu.available || state.backend === "ncnn") {
       gpuMode.textContent = "";
       gpuMode.removeAttribute("data-mode");
     } else {
@@ -307,6 +323,10 @@ function render(state) {
       gpuMode.dataset.mode = safe ? "safe" : "fast";
     }
   }
+  // ncnn compiles no engines, so the cache panel would sit at "尚無快取"
+  // forever with two buttons for a folder nothing writes to.
+  const cachePanel = $("cache-panel");
+  if (cachePanel) cachePanel.hidden = state.backend === "ncnn";
 
   const player = (state.players || []).find((p) => p.connected) || (state.players || [])[0];
   const compiling = Boolean(state.engine_compiling);
@@ -373,7 +393,7 @@ function render(state) {
   setupBtn.dataset.state = state.bootstrap.running ? "loading" : "idle";
   setupBtn.querySelector("span").textContent = state.bootstrap.running
     ? state.bootstrap.message || "安裝中"
-    : "安裝 TensorRT 執行環境";
+    : `安裝 ${backendName(state.backend)} 執行環境`;
 
   const toast = $("toast");
   if (state.error && connected > 0) {
@@ -393,9 +413,9 @@ function render(state) {
   engine.classList.toggle("is-settling", settling);
   engine.classList.toggle("is-compiling", compiling);
   if (!ready) {
-    engine.textContent = "還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。";
+    engine.textContent = `還缺 ${backendName(state.backend)} 執行環境。安裝後請重新開啟 mpv。`;
   } else if (compiling) {
-    engine.textContent = "首次編譯 TensorRT 引擎中…可能需要數十秒到數分鐘,請稍候";
+    engine.textContent = "首次編譯 TensorRT 引擎中…可能需要數十秒到數分鐘,請稍候";  // TRT-only: ncnn builds none, so `compiling` never becomes true there
   } else if (settling) {
     engine.textContent = "切換中…正在套用新設定,請稍候";
   } else if (bad) {

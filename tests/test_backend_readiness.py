@@ -9,7 +9,36 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from fluid_motion.core.runtime import diagnose, missing_labels
+
+
+def _code_only(js: str) -> str:
+    """The file with whole-line // comments dropped.
+
+    Only whole-line ones: a naive split on "//" would cut a URL in half. That
+    is enough here, because what these assertions guard against is a string
+    being *used*, and the comments that mention the old strings are all on
+    their own lines.
+    """
+    return "\n".join(
+        line for line in js.splitlines() if not line.lstrip().startswith("//")
+    )
+
+
+@pytest.fixture(autouse=True)
+def vulkan_present(monkeypatch):
+    """Vulkan is a property of the machine running the suite, not of tmp_path.
+
+    Left alone, every ncnn assertion here would quietly depend on whether the
+    box has a display driver installed -- green on a workstation, red on a CI
+    runner, for reasons having nothing to do with the code. Pinned on, and the
+    one test that cares turns it off explicitly.
+    """
+    from fluid_motion.core import runtime
+
+    monkeypatch.setattr(runtime, "vulkan_available", lambda: True)
 
 
 def _tree(root: Path, *, accel: str | None) -> Path:
@@ -51,6 +80,22 @@ def test_an_amd_tree_with_the_ncnn_plugin_is_ready(tmp_path):
     assert "tensorrt" not in {c.id for c in status.checks}, (
         "an AMD tree was judged against a CUDA-only requirement"
     )
+
+
+def test_the_ncnn_plugin_without_vulkan_is_not_ready(monkeypatch, tmp_path):
+    """The plugin is installable; the Vulkan loader is not -- it comes from the
+    display driver. Checking only the DLL would call this machine ready and let
+    the filter construct and then fail, with mpv saying nothing more useful than
+    "could not init VS"."""
+    from fluid_motion.core import runtime
+
+    monkeypatch.setattr(runtime, "vulkan_available", lambda: False)
+    status = diagnose(_tree(tmp_path, accel="ncnn"), backend="ncnn")
+
+    assert status.ready is False
+    detail = next(c.detail for c in status.checks if c.id == "ncnn")
+    assert "Vulkan" in detail, "the message has to name Vulkan, not the plugin"
+    assert "vsncnn.dll" not in detail, "the plugin is present -- do not blame it"
 
 
 def test_a_tensorrt_tree_is_not_accepted_as_an_amd_one(tmp_path):
@@ -138,6 +183,73 @@ def test_an_nvidia_install_still_pulls_tensorrt(monkeypatch, tmp_path):
     assert "VSNCNN" not in joined
 
 
+# -- the seam between detection and the file mpv loads ----------------------
+def test_apply_writes_the_backend_the_hardware_resolved_to(monkeypatch, tmp_path):
+    """resolve_backend() being right is worth nothing if apply() does not carry
+    the answer into RifeParams. Everything either side of this seam is tested;
+    without this, a wiring mistake here would leave an AMD machine writing a
+    TensorRT script and nothing would fail."""
+    from fluid_motion.config import Settings
+    from fluid_motion.core import gpu, inject
+
+    captured = {}
+    monkeypatch.setattr(
+        inject, "write_vpy", lambda path, params, **kw: captured.update(backend=params.backend) or path
+    )
+    monkeypatch.setattr(inject, "available_vendors", lambda: {gpu.AMD})
+    monkeypatch.setattr(inject, "resolve_multi", lambda info, settings: 1)  # stop before any IPC
+
+    inject.apply(
+        _FakeIpc(),
+        Settings(backend="auto"),
+        tmp_path,
+        info={"container_fps": 24, "display_fps": 60},
+    )
+
+    assert captured["backend"] == "ncnn", "an AMD machine wrote a TensorRT script"
+
+
+def test_apply_still_writes_tensorrt_for_an_nvidia_machine(monkeypatch, tmp_path):
+    from fluid_motion.config import Settings
+    from fluid_motion.core import gpu, inject
+
+    captured = {}
+    monkeypatch.setattr(
+        inject, "write_vpy", lambda path, params, **kw: captured.update(backend=params.backend) or path
+    )
+    monkeypatch.setattr(inject, "available_vendors", lambda: {gpu.NVIDIA, gpu.AMD})
+    monkeypatch.setattr(inject, "resolve_multi", lambda info, settings: 1)
+
+    inject.apply(
+        _FakeIpc(),
+        Settings(backend="auto"),
+        tmp_path,
+        info={"container_fps": 24, "display_fps": 60},
+    )
+
+    assert captured["backend"] == "trt"
+
+
+class _FakeIpc:
+    """Enough of MpvIpc for apply() to get as far as writing the script."""
+
+    def __init__(self):
+        self.commands = []
+        self.props = {"hwdec": "auto-copy", "vf": ""}
+
+    def get(self, name):
+        return self.props.get(name)
+
+    def set(self, name, value):
+        self.props[name] = value
+
+    def command(self, *args, **kwargs):
+        self.commands.append(args)
+
+    def close(self):
+        pass
+
+
 # -- the UI stops claiming CUDA on a machine that has none ------------------
 def test_the_engine_line_names_the_backend_actually_in_use():
     """It read "TensorRT · CUDA" from a literal, so an AMD machine would have
@@ -164,3 +276,37 @@ def test_the_backend_selector_is_wired_end_to_end():
     assert "renderBackends(state.settings.backend, state.backend, state.adapters)" in js
     assert 'command("set_backend"' in js
     assert hasattr(__import__("fluid_motion.api", fromlist=["Bridge"]).Bridge, "set_backend")
+
+
+def test_no_runtime_message_tells_an_amd_user_to_install_tensorrt():
+    """Three sentences named TensorRT unconditionally -- the readiness line, the
+    setup button and the not-ready prompt. On an AMD machine each one named a
+    runtime that is neither installed nor wanted, and one of them was an
+    instruction to go and install it."""
+    from fluid_motion.paths import ui_dir
+
+    js = _code_only((ui_dir() / "app.js").read_text(encoding="utf-8"))
+
+    assert "function backendName" in js
+    assert '"安裝 TensorRT 執行環境"' not in js
+    assert '"還缺 TensorRT 執行環境。安裝後請重新開啟 mpv。"' not in js
+    assert "backendName(state.backend)" in js
+
+
+def test_the_gpu_panel_does_not_deny_a_gpu_it_can_name():
+    """state.gpu comes from nvidia-smi, so an AMD machine had gpu.available
+    false and was told "未偵測到 NVIDIA GPU" -- while state.adapters held its
+    actual adapter name and the ncnn backend was set to run on it."""
+    from fluid_motion.paths import ui_dir
+
+    # Comments stripped first: the fix's own comment quotes the string it
+    # replaced, and matching that would be the test failing for the wrong
+    # reason -- the property is "this is not what gets shown", not "this text
+    # appears nowhere in the file".
+    js = _code_only((ui_dir() / "app.js").read_text(encoding="utf-8"))
+
+    assert '"未偵測到 NVIDIA GPU"' not in js, "the NVIDIA-only message is back"
+    assert "state.adapters || [])[0]" in js, "the detected adapter name is not used"
+    # The safe/accelerated badge is the RTX 50 CUDA-graph gate; ncnn has no
+    # CUDA graphs, so reporting on it there would describe a feature not in play.
+    assert 'state.backend === "ncnn"' in js

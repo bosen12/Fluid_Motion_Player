@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fluid_motion.core.gpu import available_vendors
+from fluid_motion.core.gpu import available_vendors, vulkan_available
 from fluid_motion.core.vs_script import (
     BACKEND_NCNN,
     resolve_backend,
@@ -124,16 +124,22 @@ def diagnose(mpv_root: str | Path | None = None, *, backend: str | None = None) 
     # reverse is worse -- it would call an AMD tree ready with nothing to run
     # the filter, and mpv would only say "could not init VS".
     if backend == BACKEND_NCNN:
+        # Two conditions, not one. The plugin is installable; the Vulkan loader
+        # is not -- it comes from the display driver. Reporting on the DLL alone
+        # would call a machine with no Vulkan ready, and the filter would then
+        # construct and fail with mpv saying only "could not init VS", which is
+        # the exact failure this whole gate exists to prevent.
         vsncnn = root / "vs-plugins" / "vsncnn.dll"
-        ncnn_ok = vsncnn.is_file()
-        checks.append(
-            Check(
-                "ncnn",
-                "ncnn / Vulkan",
-                ncnn_ok,
-                str(vsncnn) if ncnn_ok else "需要 vsncnn.dll（可自動安裝）與顯示卡驅動的 Vulkan 支援",
-            )
-        )
+        plugin_ok = vsncnn.is_file()
+        vulkan_ok = vulkan_available()
+        ncnn_ok = plugin_ok and vulkan_ok
+        if ncnn_ok:
+            detail = str(vsncnn)
+        elif not plugin_ok:
+            detail = "需要 vsncnn.dll（可自動安裝）"
+        else:
+            detail = "找不到 Vulkan（vulkan-1.dll）——請更新顯示卡驅動"
+        checks.append(Check("ncnn", "ncnn / Vulkan", ncnn_ok, detail))
         vstrt = vsncnn if ncnn_ok else None
     else:
         vstrt = None

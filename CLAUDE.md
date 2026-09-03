@@ -95,9 +95,11 @@ AMD GPU is untested. Three rules hold that risk down; keep them:
    empty vendor set means "could not tell", never "no NVIDIA". A machine that
    works today must not be moved onto the untested path by a reading that did
    not arrive.
-2. **`diagnose()` demands the backend's own accelerator.** An AMD tree without
-   `vsncnn.dll` reports not ready rather than ready-with-nothing-to-run — mpv
-   would otherwise say only "could not init VS".
+2. **`diagnose()` demands the backend's own accelerator — both halves of it.**
+   An AMD tree needs `vsncnn.dll` *and* the Vulkan loader, which is not
+   installable: it comes from the display driver. Either missing reports not
+   ready rather than ready-with-nothing-to-run, and the message names which
+   one — mpv would otherwise say only "could not init VS".
 3. **The NVIDIA output is pinned.** `test_an_nvidia_gpu_still_gets_exactly_the_
    tensorrt_backend_it_did_before` fixes the `Backend.TRT` call and its
    parameters. The rendered script is byte-identical to what shipped before the
