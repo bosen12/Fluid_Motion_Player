@@ -26,7 +26,7 @@
 <div class="chip">
   <span class="chip__dot" aria-hidden="true"></span>
   <span class="chip__name">Fluid Motion</span>
-  <span class="chip__ver" id="ver-chip">v1.4.7</span>
+  <span class="chip__ver" id="ver-chip">v1.6.4</span>
   <a class="chip__cta" href="https://github.com/bosen12/Fluid_Motion_Player/releases/latest">下載</a>
 </div>
 
@@ -164,9 +164,9 @@
     <ol class="steps__list">
       <li><span class="steps__n">1</span><div><h3>先開播放器，並且開始播放</h3><p>沒有播放器在跑時，它會退回設定檔裡的 <code>mpv_root</code>；若那裡也沒有 mpv 就直接中止，而不是把好幾 GB 裝到沒人會讀的地方。</p></div></li>
       <li><span class="steps__n">2</span><div><h3>開啟 Fluid Motion</h3><p>介面上應該會顯示已接上該播放器。</p></div></li>
-      <li><span class="steps__n">3</span><div><h3>點「安裝 TensorRT 執行環境」</h3><p>總共約 3.5 GB：vs-mlrt TensorRT、RIFE 模型，必要時加上 VapourSynth。只需要做一次。</p></div></li>
+      <li><span class="steps__n">3</span><div><h3>點安裝執行環境</h3><p>NVIDIA 約 3.5 GB：vs-mlrt TensorRT、RIFE 模型，必要時加上 VapourSynth。AMD 小很多——ncnn 外掛只有單一個 2.7 MB 的檔案，因為 Vulkan 本身由顯示卡驅動提供。只需要做一次。</p></div></li>
       <li><span class="steps__n">4</span><div><h3>完全退出並重開播放器</h3><p>mpv 只在啟動時載入腳本，所以這一步不能省。</p></div></li>
-      <li><span class="steps__n">5</span><div><h3>播影片，打開即時補幀</h3><p>或直接按 <code>F3</code>。第一個解析度會編譯 TensorRT engine（數十秒到數分鐘），之後同解析度走快取。</p></div></li>
+      <li><span class="steps__n">5</span><div><h3>播影片，打開即時補幀</h3><p>或直接按 <code>F3</code>。在 NVIDIA 上，第一個解析度會編譯 TensorRT engine（數十秒到數分鐘），之後同解析度走快取；ncnn 不編譯 engine，所以沒有這一段等待，快取面板對它也不適用。</p></div></li>
     </ol>
   </section>
 
@@ -177,7 +177,8 @@
         <h2 class="sec__h">需求</h2>
         <ul class="req">
           <li><strong>Windows 10 / 11 x64</strong></li>
-          <li><strong>NVIDIA 顯示卡</strong><span>TensorRT；建議 RTX 20 系列以後</span></li>
+          <li><strong>NVIDIA 顯示卡</strong><span>TensorRT；建議 RTX 20 系列以後。這是有實測數據的路徑。</span></li>
+          <li><strong>或 AMD 顯示卡</strong><span>ncnn / Vulkan。<strong>⚠️ 未經 AMD 實機驗證</strong> —— 這個專案沒有人有 AMD 顯示卡，程式路徑完整、安裝流程也驗證過，但 RIFE 到底能不能在 AMD GPU 上補幀，沒有任何執行期證據。如果你試了，不論成功或失敗都請回報，附上 <code>%APPDATA%\FluidMotion\fluid_debug.log</code> 即可。兩張都有的機器以 NVIDIA 優先，也可以在程式裡手動指定。</span></li>
           <li><strong>任何以 mpv 為基礎的播放器</strong><span>原生 mpv、mpv.net，或內嵌 libmpv 的殼，例如 <a href="https://github.com/bosen12/AX_Player">AX Player</a></span></li>
         </ul>
         <p class="req__note">

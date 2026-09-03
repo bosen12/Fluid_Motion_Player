@@ -166,6 +166,11 @@ v1.4.6. Bump both, commit as `Bump to X.Y.Z`, tag `vX.Y.Z`, then
 `gh release create` with `FluidMotion.exe`. Release titles follow
 `Fluid Motion vX.Y.Z`. The shipped exe carries no version resource.
 
+`docs/index.html` carries the version too — as the offline fallback for the
+chip `docs/app.js` normally fills from the GitHub API. It sat three releases
+behind before anyone noticed, so `test_public_surfaces.py` now pins it to
+`__version__`: bump it with the other two and the suite stays green.
+
 The distribution copy the owner keeps lives at `C:\Fluid_Motion`
 (`FluidMotion.exe`, `README.md`, `LICENSE`, `NOTICE`).
 
