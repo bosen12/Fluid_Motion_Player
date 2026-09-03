@@ -1,4 +1,5 @@
 import builtins
+import dataclasses
 import re
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from fluid_motion.paths import ui_dir
 
 from fluid_motion.config import Settings, load_settings, save_settings
 from fluid_motion.core.inject import FILTER_LABEL, _vf_arg
-from fluid_motion.core.mpv_detect import candidate_pipes
+from fluid_motion.core.mpv_detect import PlayerProcess, candidate_pipes
 from fluid_motion.core.runtime import diagnose
 
 
@@ -1820,10 +1821,24 @@ def test_no_externally_sourced_field_reaches_html_unescaped():
     js = (ui_dir() / "app.js").read_text(encoding="utf-8")
     holes = re.findall(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", js)
     assert holes, "no template interpolations found -- the regex stopped matching"
-    external = (
-        "p.media", "p.label", "p.name", "p.missing", "p.config_dir",
-        "c.label", "c.detail", "c.ok", "gpu.name", "state.error",
+    # The player fields come from the dataclass, not from a list written out
+    # here. A hand-kept list is the same staleness one level up: it is true of
+    # the fields somebody remembered, never of the fields that exist. Measured
+    # -- adding `${p.exe}` raw to the player card passed all 243 tests, and
+    # p.exe is a path psutil read off the process.
+    #
+    # Only the str-typed ones: the ints and bools are what `${p.width}` and
+    # `${p.connected ? ...}` interpolate, and requiring escapeHtml around those
+    # would be noise rather than a guard.
+    player_fields = tuple(
+        f"p.{f.name}" for f in dataclasses.fields(PlayerProcess) if f.type == "str"
     )
+    assert "p.media" in player_fields and "p.exe" in player_fields, (
+        "the dataclass no longer reports plain 'str' annotations -- this guard "
+        "silently stopped covering anything"
+    )
+    # The rest are not dataclass-backed, so they stay written out.
+    external = player_fields + ("c.label", "c.detail", "c.ok", "gpu.name", "state.error")
     for hole in holes:
         for field in external:
             if field in hole:
