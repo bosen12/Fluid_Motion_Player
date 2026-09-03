@@ -896,7 +896,7 @@ def _applied_profiles(monkeypatch, engine):
 
     seen: list[str] = []
 
-    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None, pid=None):
+    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None, pid=None, **_kw):
         seen.append(settings.profile)
         ipc.command("vf", "add", "@fluid:vapoursynth")
         return Path(mpv_root) / "shaders" / "fluid_rife.vpy"
@@ -988,7 +988,7 @@ def test_no_op_multiplier_does_not_reapply_forever(monkeypatch, tmp_path):
     monkeypatch.setattr(
         watcher_mod,
         "apply",
-        lambda ipc_, s_, root_, announce=False, info=None, pid=None: calls.append(s_.profile),
+        lambda ipc_, s_, root_, announce=False, info=None, pid=None, **_kw: calls.append(s_.profile),
     )
 
     for _ in range(5):
@@ -1028,7 +1028,7 @@ def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
 
     attempts: list[int] = []
 
-    def failing(ipc_, s_, root_, announce=False, info=None, pid=None):
+    def failing(ipc_, s_, root_, announce=False, info=None, pid=None, **_kw):
         attempts.append(1)
         raise IpcError("mpv said no")
 
@@ -1059,7 +1059,7 @@ def test_pipe_closing_apply_is_not_surfaced_as_error(monkeypatch, tmp_path):
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def dying(ipc_, s_, root_, announce=False, info=None, pid=None):
+    def dying(ipc_, s_, root_, announce=False, info=None, pid=None, **_kw):
         raise IpcError("無法加入補幀濾鏡：(232, 'WriteFile', '管道正關閉中。')")
 
     monkeypatch.setattr(watcher_mod, "apply", dying)
@@ -1077,7 +1077,7 @@ def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
-    def failing(ipc_, s_, root_, announce=False, info=None, pid=None):
+    def failing(ipc_, s_, root_, announce=False, info=None, pid=None, **_kw):
         raise IpcError("mpv said no")
 
     monkeypatch.setattr(watcher_mod, "apply", failing)

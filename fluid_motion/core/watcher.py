@@ -423,6 +423,18 @@ class Engine:
             bool(graph),
             bool(cfg.force_accel),
             str(cfg.mpv_root),
+            # The resolved backend, not cfg.backend: "auto" can answer
+            # differently without the setting moving at all, and it decides
+            # which Backend() the .vpy constructs -- the largest difference
+            # this key can describe. Switching through the UI happens to
+            # re-apply anyway (set_enabled invalidates first), which is exactly
+            # why leaving it out looked harmless; a change arriving any other
+            # way was silently kept, with mpv still running the old backend
+            # while the panel reported the new one.
+            #
+            # Before multi, not after: multi is last by convention and a test
+            # reads it as key[-1].
+            self._backend(),
             int(multi),
         )
 
@@ -460,7 +472,10 @@ class Engine:
             # standalone mpv at the same time. Falls back to the setting when
             # mpv declines to answer.
             root = player_config_dir(ipc) or Path(self.settings.mpv_root)
-            apply(ipc, self.settings, root, announce=announce, info=info, pid=pid)
+            apply(
+                ipc, self.settings, root,
+                announce=announce, info=info, pid=pid, backend=self._backend(),
+            )
         except IpcError as exc:
             gone = is_disconnect_error(str(exc))
             if not gone:

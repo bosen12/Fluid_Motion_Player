@@ -87,7 +87,7 @@ def _record_apply(monkeypatch):
 
     applied: list[Path] = []
 
-    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None, pid=None):
+    def fake_apply(ipc, settings, mpv_root, *, announce=False, info=None, pid=None, **_kw):
         applied.append(Path(mpv_root))
         ipc.command("vf", "add", "@fluid:vapoursynth")
         return Path(mpv_root) / "shaders" / "fluid_rife.vpy"

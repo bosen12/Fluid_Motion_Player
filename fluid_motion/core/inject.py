@@ -667,6 +667,7 @@ def apply(
     announce: bool = False,
     info: dict[str, Any] | None = None,
     pid: int | None = None,
+    backend: str | None = None,
 ) -> Path:
     # The caller has usually just read these; re-reading them costs another
     # round of IPC for values that cannot have changed in between.
@@ -674,7 +675,14 @@ def apply(
     source = parse_fps(info.get("container_fps") or info.get("fps"))
     display = info.get("display_fps")
     script = script_output_path(mpv_root)
-    backend = resolve_backend(settings.backend, available_vendors())
+    # Supplied by the watcher, which has already resolved it for _filter_key
+    # and for the readiness verdict. Resolving it again here would be a second
+    # independent answer to the same question, equal to the first only by
+    # coincidence -- available_vendors() reads caches with their own expiry.
+    # Deciding once and carrying the answer is what keeps the key, the
+    # readiness check and the file mpv actually loads describing one backend.
+    if backend is None:
+        backend = resolve_backend(settings.backend, available_vendors())
     params = RifeParams(
         model=settings.rife_model,
         scene_threshold=settings.scene_threshold,

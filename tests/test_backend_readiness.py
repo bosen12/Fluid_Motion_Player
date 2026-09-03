@@ -231,13 +231,22 @@ def test_apply_still_writes_tensorrt_for_an_nvidia_machine(monkeypatch, tmp_path
 
 
 class _FakeIpc:
-    """Enough of MpvIpc for apply() to get as far as writing the script."""
+    """Enough of MpvIpc for apply() and for a full tick() over one player."""
 
     def __init__(self):
         self.commands = []
-        self.props = {"hwdec": "auto-copy", "vf": ""}
+        self.path = "fake-pipe"
+        self.vf: list = []
+        self.props = {
+            "hwdec": "auto-copy",
+            "container-fps": 24,
+            "estimated-vf-fps": 24,
+            "display-fps": 60,
+        }
 
     def get(self, name):
+        if name == "vf":
+            return self.vf
         return self.props.get(name)
 
     def set(self, name, value):
@@ -245,9 +254,94 @@ class _FakeIpc:
 
     def command(self, *args, **kwargs):
         self.commands.append(args)
+        if args[:2] == ("vf", "add"):
+            self.vf = [{"name": "vapoursynth", "label": "fluid"}]
+        elif args[:2] == ("vf", "remove"):
+            self.vf = []
 
     def close(self):
         pass
+
+
+# -- a backend change has to reach mpv --------------------------------------
+def _engine_with_one_player(monkeypatch, vendors):
+    """A connected, ready player, with the vendor set under the test's control."""
+    from fluid_motion.config import Settings
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_detect import PlayerProcess
+    from fluid_motion.core.runtime import Check, RuntimeStatus
+
+    def _ready(root):
+        ids = ("mpv", "vapoursynth", "scdetect", "vsmlrt", "tensorrt", "python")
+        checks = [Check(n, n.title(), True) for n in ids]
+        checks += [Check(f"rife{n}", f"RIFE {n}", True) for n in (46, 425, 426)]
+        return RuntimeStatus(mpv_root=str(root), ready=True, checks=checks)
+
+    engine = watcher_mod.Engine(Settings(enabled=True, profile="2x", mpv_root="Z:/cfg"))
+    ipc = _FakeIpc()
+    told: list[str | None] = []
+
+    def fake_apply(ipc_, settings, mpv_root, *, announce=False, info=None, pid=None, backend=None):
+        told.append(backend)
+        ipc_.command("vf", "add", "@fluid:vapoursynth")
+        return Path(mpv_root) / "fluid_rife.vpy"
+
+    monkeypatch.setattr(
+        watcher_mod, "iter_mpv_processes",
+        lambda: [PlayerProcess(pid=99, name="mpv.exe", label="mpv")],
+    )
+    monkeypatch.setattr(watcher_mod, "connect_pid", lambda p, extra=None, **kw: ipc)
+    monkeypatch.setattr(watcher_mod, "player_config_dir", lambda _i: Path("Z:/player"))
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root, **_kw: _ready(root))
+    monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
+    monkeypatch.setattr(watcher_mod, "install_lua", lambda r: r)
+    monkeypatch.setattr(watcher_mod, "ensure_input_binding", lambda r: None)
+    monkeypatch.setattr(watcher_mod, "apply", fake_apply)
+    monkeypatch.setattr(watcher_mod, "available_vendors", lambda **_kw: vendors[0])
+    engine._runtime = _ready("Z:/cfg")
+    return engine, told
+
+
+def test_a_changed_backend_is_re_applied_rather_than_left_running(monkeypatch):
+    """_filter_key is "everything that changes the generated .vpy", and the
+    backend is the largest such difference there is -- it decides which
+    Backend() the script constructs.
+
+    Leaving it out looked harmless because a UI switch re-applies anyway
+    (set_enabled invalidates first). A change arriving any other way -- the
+    "auto" answer moving because the adapter set did -- was silently kept:
+    mpv went on running the old backend's filter while the panel reported the
+    new one, with nothing left to notice.
+    """
+    from fluid_motion.core import gpu
+
+    vendors = [{gpu.NVIDIA}]
+    engine, told = _engine_with_one_player(monkeypatch, vendors)
+
+    engine.tick()
+    assert told == ["trt"]
+
+    engine.tick()
+    assert told == ["trt"], "an unchanged backend must not re-apply every tick"
+
+    vendors[0] = {gpu.AMD}
+    engine.tick()
+    assert told == ["trt", "ncnn"], "the filter kept running on the old backend"
+
+
+def test_apply_is_told_the_backend_rather_than_deriving_its_own(monkeypatch):
+    """One decision, used everywhere. The watcher already resolves the backend
+    for _filter_key and for the readiness verdict; apply() deriving a third
+    answer independently would be equal to those only by coincidence, since
+    available_vendors() reads caches with their own expiry."""
+    from fluid_motion.core import gpu
+
+    engine, told = _engine_with_one_player(monkeypatch, [{gpu.AMD}])
+
+    engine.tick()
+
+    assert told == ["ncnn"], "apply() was not handed the resolved backend"
+    assert None not in told, "apply() was left to work it out for itself"
 
 
 # -- the UI stops claiming CUDA on a machine that has none ------------------
