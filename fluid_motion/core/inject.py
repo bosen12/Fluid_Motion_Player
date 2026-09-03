@@ -601,7 +601,19 @@ def restore_hwdec(ipc: MpvIpc, pid: int | None = None) -> None:
     try:
         ipc.set("hwdec", previous)
     except IpcError:
-        pass
+        # The pop comes first so a success cannot leave a stale record behind
+        # -- but a refusal is not a success. mpv is still running, still on
+        # copy-back, and the mode it had before now exists nowhere: the
+        # remove() the watcher retries finds an empty map and restores
+        # nothing, and neither does the next run's stranded-hwdec recovery.
+        # So the player would pay copy-back's GPU->CPU transfer for the rest
+        # of its life over one timed-out command.
+        #
+        # No special case for a player that has actually gone away: tick()
+        # sweeps hwdec_pids() against the processes it can see, so a record
+        # put back for a dead pid is dropped on the next pass.
+        _PREV_HWDEC.setdefault(pid, previous)
+        _write_hwdec_state()
 
 
 def flush_hwdec_state() -> None:
