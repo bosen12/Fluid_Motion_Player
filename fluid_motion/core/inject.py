@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings
 from fluid_motion.core.gpu import available_vendors
 from fluid_motion.core.gpu import snapshot as gpu_snapshot
-from fluid_motion.core.mpv_ipc import IpcError, MpvIpc
+from fluid_motion.core.mpv_ipc import COMMAND_TIMEOUT, IpcError, MpvIpc
 from fluid_motion.core.vs_script import (
     RifeParams,
     backend_label,
@@ -346,12 +347,49 @@ def is_settling(short: bool, now: float, settling_until: float) -> bool:
     return short and now < settling_until
 
 
-def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
+# One budget for the whole batch, not one timeout per property.
+#
+# mpv services its IPC from a single thread, so "did not answer" is never a
+# per-property fact: a player that has stopped answering -- compiling a
+# TensorRT engine is the ordinary way to get there -- answers none of the
+# fifteen reads below. Each one then waits out the full command timeout in
+# turn. Measured against a connection that accepts writes and never replies:
+# one get() 2.50s, the whole snapshot 37.6s, and every field came back the
+# same default it already had after the first failure. That is 37 seconds of
+# a TICK_SECONDS=0.3 loop spent deriving an answer that was known at 2.5 --
+# and tick() walks players serially, so a second player waits it out too.
+#
+# The budget is one command timeout: a batch of reads is worth no more than
+# the single stuck read it is already allowed to cost. A slow-but-answering
+# mpv is untouched -- rate_snapshot's docstring puts a busy full set at
+# ~230ms, a tenth of this -- and a silent one now costs 2.5s, not 37.6s.
+SNAPSHOT_BUDGET = COMMAND_TIMEOUT
+
+# Below this there is no point issuing the command at all: _command_locked
+# backs off from 0.5ms and this file's own docstring puts a busy round trip at
+# ~15ms, so a sliver of budget buys nothing but another unanswerable write on
+# the wire. It also keeps the cutoff deterministic -- the read that exhausts
+# the budget lands a hair either side of zero depending on clock rounding, so
+# a `<= 0` test lets a second doomed command through about half the time.
+_MIN_READ = 0.005
+
+
+def _budgeted_get(ipc: MpvIpc, deadline: float) -> Any:
     def _get(name: str, default: Any = None) -> Any:
+        remaining = deadline - time.monotonic()
+        if remaining <= _MIN_READ:
+            return default
         try:
-            return ipc.get(name)
+            return ipc.get(name, timeout=remaining)
         except IpcError:
             return default
+
+    return _get
+
+
+def snapshot_playback(ipc: MpvIpc, *, budget: float = SNAPSHOT_BUDGET) -> dict[str, Any]:
+    deadline = time.monotonic() + budget
+    _get = _budgeted_get(ipc, deadline)
 
     media = _get("media-title") or _get("filename") or ""
     width = int(_get("width") or 0)
@@ -382,11 +420,20 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     # used to read as "the filter fell off" and get another vf add every
     # APPLY_RETRY_BACKOFF. Report "could not ask" as its own state.
     vf_ok = True
-    try:
-        vf_raw = ipc.get("vf")
-    except IpcError:
+    remaining = deadline - time.monotonic()
+    if remaining <= _MIN_READ:
+        # An exhausted budget means the reads above went unanswered, which is
+        # precisely what vf_ok exists to distinguish: not "no filter loaded",
+        # but "could not ask". Skipping the read here reports the same thing a
+        # sixteenth timeout would have, 2.5 seconds sooner.
         vf_raw = None
         vf_ok = False
+    else:
+        try:
+            vf_raw = ipc.get("vf", timeout=remaining)
+        except IpcError:
+            vf_raw = None
+            vf_ok = False
     interpolating = vf_is_fluid(vf_raw)
     source = live_source_fps(container, estimated, interpolating)
     return {
@@ -413,7 +460,7 @@ def snapshot_playback(ipc: MpvIpc) -> dict[str, Any]:
     }
 
 
-def rate_snapshot(ipc: MpvIpc) -> dict[str, Any]:
+def rate_snapshot(ipc: MpvIpc, *, budget: float = SNAPSHOT_BUDGET) -> dict[str, Any]:
     """Just the fields the multiplier depends on, and nothing else.
 
     snapshot_playback reads fourteen properties because the UI wants all of
@@ -421,16 +468,20 @@ def rate_snapshot(ipc: MpvIpc) -> dict[str, Any]:
     thread is busy running the filter, so the full set is roughly 230ms. Both
     set_enabled and apply() were paying that to work out one integer, twice
     per settings change, on top of the tick that follows.
+
+    Shares snapshot_playback's one-budget-per-batch rule for the same reason,
+    with a smaller multiplier (three reads, so 7.5s against a silent mpv) and
+    a worse place to spend it: this one is reached from a bridge thread, so
+    the cost lands on the window rather than on a background tick.
     """
-    def _get(name: str, default: Any = None) -> Any:
-        try:
-            return ipc.get(name)
-        except IpcError:
-            return default
+    deadline = time.monotonic() + budget
+    _get = _budgeted_get(ipc, deadline)
 
     container = _get("container-fps")
     estimated = _get("estimated-vf-fps")
-    interpolating = interpolation_active(ipc)
+    # Inlined rather than calling interpolation_active(ipc), which is the same
+    # two operations without a way to pass the remaining budget through.
+    interpolating = vf_is_fluid(_get("vf"))
     source = live_source_fps(container, estimated, interpolating)
     return {
         "container_fps": as_fps(container),

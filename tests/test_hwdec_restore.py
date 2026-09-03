@@ -29,7 +29,7 @@ class _Ipc:
         self.refuse = refuse
         self.sets: list[tuple] = []
 
-    def get(self, name):
+    def get(self, name, *, timeout=None):
         return "auto-safe"
 
     def set(self, name, value):

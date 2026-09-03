@@ -139,9 +139,10 @@ Other invariants:
 - `fluid_motion/core/bootstrap.py` — TensorRT/VapourSynth installer, Lua and
   hotkey install
 - `fluid_motion/api.py` — the `Bridge` exposed to JS. This is the security
-  boundary and currently has **no tests**; validation lives in
-  `Engine.update_settings`, and nothing pins that the bridge keeps routing
-  through it.
+  boundary. Validation lives in `Engine.update_settings`, and
+  `tests/test_bridge.py` pins that the bridge keeps routing through it rather
+  than writing onto the dataclass — that file did not exist when this section
+  was written and the paragraph said so; it does now.
 - `fluid_motion/ui/` — plain HTML/CSS/JS, no framework
 - `docs/` — the published GitHub Pages site, not developer docs
 

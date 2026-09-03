@@ -50,7 +50,7 @@ class _FakeIpc:
     def close(self):
         self.closed = True
 
-    def get(self, name: str):
+    def get(self, name: str, *, timeout=None):
         if name == "vf":
             return self.vf
         return self.props.get(name)
@@ -1629,7 +1629,7 @@ def test_departed_player_does_not_leave_its_hwdec_behind():
         def set(self, name, value):
             restored.append((name, value))
 
-        def get(self, name):
+        def get(self, name, *, timeout=None):
             return "auto-copy"
 
     # A different player that merely shares the pipe name must not inherit it.
@@ -1674,7 +1674,7 @@ def test_snapshot_reads_vf_once(monkeypatch):
     class _Ipc:
         path = "x"
 
-        def get(self, name):
+        def get(self, name, *, timeout=None):
             reads.append(name)
             if name == "vf":
                 return [{"name": "vapoursynth", "label": "fluid"}]

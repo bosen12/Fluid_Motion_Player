@@ -125,3 +125,123 @@ def test_a_caller_that_cannot_get_the_connection_fails_instead_of_corrupting_it(
     finally:
         ipc._lock.release()
     assert handle.writes == [], "a refused command must not reach the wire"
+
+
+class _SilentHandle:
+    """Accepts every write and never replies. What a wedged mpv is on the wire.
+
+    mpv services its IPC from one thread, so this is not a contrived state: an
+    mpv compiling a TensorRT engine looks exactly like this, and so does one
+    that has already exited (the peek in _read returns nothing either way).
+    """
+
+    def __init__(self):
+        self.writes: list[str] = []
+
+    def settimeout(self, _timeout):
+        pass
+
+    def close(self):
+        pass
+
+    def sendall(self, data: bytes) -> None:
+        self.writes.append(json.loads(data.decode("utf-8"))["command"][1])
+
+    def recv(self, _n: int) -> bytes:
+        return b""
+
+
+class _AnsweringHandle:
+    """Answers every get_property from a dict, so a healthy read still reads."""
+
+    def __init__(self, props: dict[str, object]):
+        self.props = props
+        self.writes: list[str] = []
+        self._pending = b""
+
+    def settimeout(self, _timeout):
+        pass
+
+    def close(self):
+        pass
+
+    def sendall(self, data: bytes) -> None:
+        msg = json.loads(data.decode("utf-8"))
+        name = msg["command"][1]
+        self.writes.append(name)
+        reply = json.dumps(
+            {"request_id": msg["request_id"], "error": "success", "data": self.props.get(name)}
+        )
+        self._pending += (reply + "\n").encode("utf-8")
+
+    def recv(self, n: int) -> bytes:
+        out, self._pending = self._pending[:n], self._pending[n:]
+        return out
+
+
+def test_a_silent_mpv_costs_one_timeout_for_the_whole_snapshot_not_fifteen():
+    """Measured before the budget existed: one get() 2.50s, the full snapshot
+    37.6s -- and every field came back the same default the first failure had
+    already fixed, so the other fourteen reads could not change the answer.
+    tick() runs at TICK_SECONDS = 0.3 and walks players serially.
+    """
+    from fluid_motion.core.inject import snapshot_playback
+
+    handle = _SilentHandle()
+    ipc = MpvIpc(handle, "unix", "fake-pipe")
+
+    budget = 0.3
+    started = time.monotonic()
+    info = snapshot_playback(ipc, budget=budget)
+    elapsed = time.monotonic() - started
+
+    assert len(handle.writes) == 1, (
+        f"spent the budget {len(handle.writes)} times over: {handle.writes}"
+    )
+    assert elapsed < budget * 2, f"the batch cost {elapsed:.2f}s against a {budget}s budget"
+    assert info["vf_ok"] is False, (
+        "a snapshot nobody answered must read as 'could not ask', never as 'no filter'"
+    )
+    assert info["media"] == "" and info["fps"] == ""
+
+
+def test_the_budget_does_not_cut_a_player_that_is_answering():
+    """The other half: a working mpv must still be read in full. A budget that
+    bought its speed by dropping properties would be a worse bug than the one
+    it fixed -- the panel would just go blank instead of freezing.
+    """
+    from fluid_motion.core.inject import snapshot_playback
+
+    handle = _AnsweringHandle(
+        {"media-title": "ep01.mkv", "width": 1920, "height": 1080, "container-fps": 23.976}
+    )
+    ipc = MpvIpc(handle, "unix", "fake-pipe")
+
+    info = snapshot_playback(ipc)
+
+    assert "vf" in handle.writes, "the one property whose failure changes a decision went unasked"
+    # Fourteen, not the fifteen a silent mpv provokes: `filename` is only read
+    # as a fallback when `media-title` comes back empty.
+    assert len(handle.writes) == 14, f"only {len(handle.writes)} of 14 properties were read"
+    assert info["vf_ok"] is True
+    assert info["media"] == "ep01.mkv"
+    assert (info["width"], info["height"]) == (1920, 1080)
+
+
+def test_rate_snapshot_shares_the_budget_too():
+    """Three reads, not fifteen, but on the bridge thread -- so the 7.5s it used
+    to cost against a silent mpv landed on the window, not on a background tick.
+    """
+    from fluid_motion.core.inject import rate_snapshot
+
+    handle = _SilentHandle()
+    ipc = MpvIpc(handle, "unix", "fake-pipe")
+
+    budget = 0.3
+    started = time.monotonic()
+    rates = rate_snapshot(ipc, budget=budget)
+    elapsed = time.monotonic() - started
+
+    assert len(handle.writes) == 1, f"spent the budget {len(handle.writes)} times over"
+    assert elapsed < budget * 2, f"the batch cost {elapsed:.2f}s against a {budget}s budget"
+    assert rates["interpolation"] is False

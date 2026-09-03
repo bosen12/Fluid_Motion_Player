@@ -244,7 +244,7 @@ class _FakeIpc:
             "display-fps": 60,
         }
 
-    def get(self, name):
+    def get(self, name, *, timeout=None):
         if name == "vf":
             return self.vf
         return self.props.get(name)

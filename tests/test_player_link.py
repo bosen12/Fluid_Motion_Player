@@ -33,7 +33,7 @@ class _FakeIpc:
     def close(self):
         pass
 
-    def get(self, name):
+    def get(self, name, *, timeout=None):
         if name == "vf":
             return self.vf
         return self.props.get(name)
@@ -374,7 +374,7 @@ def test_a_player_whose_vf_cannot_be_read_is_left_alone(monkeypatch, engine_with
     engine, ipc = engine_with_player(player_ready=True)
     applied = _record_apply(monkeypatch)
 
-    def _vf_is_unreadable(name):
+    def _vf_is_unreadable(name, *, timeout=None):
         if name == "vf":
             raise IpcError("mpv IPC timed out")
         return ipc.props.get(name)

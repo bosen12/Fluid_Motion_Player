@@ -14,6 +14,13 @@ class IpcError(RuntimeError):
     pass
 
 
+# What a single command is worth waiting for. Named rather than left as a
+# literal default because callers that read a *batch* of properties have to
+# spend this as a budget for the whole batch instead of once per read -- see
+# snapshot_playback, where fifteen of them in a row added up to 37 seconds.
+COMMAND_TIMEOUT = 2.5
+
+
 def as_win_pipe(path: str) -> str:
     """mpv on Windows prefixes the ipc-server string with \\\\.\\pipe\\ as-is."""
     if path.startswith("\\\\.\\pipe\\"):
@@ -55,7 +62,7 @@ class MpvIpc:
         except OSError:
             pass
 
-    def command(self, *args: Any, timeout: float = 2.5) -> Any:
+    def command(self, *args: Any, timeout: float = COMMAND_TIMEOUT) -> Any:
         # The caller's own deadline doubles as the queueing budget: it already
         # decided how long this command is worth waiting for, and a command
         # that cannot get the connection in that time has failed for the same
@@ -104,8 +111,10 @@ class MpvIpc:
             idle = 0.0005
             self._buf += chunk
 
-    def get(self, name: str) -> Any:
-        return self.command("get_property", name)
+    def get(self, name: str, *, timeout: float = COMMAND_TIMEOUT) -> Any:
+        # timeout is passed by batch readers spending one shared budget across
+        # several properties; on its own a get costs what any command costs.
+        return self.command("get_property", name, timeout=timeout)
 
     def set(self, name: str, value: Any) -> Any:
         return self.command("set_property", name, value)

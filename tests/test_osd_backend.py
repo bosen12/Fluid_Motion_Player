@@ -16,7 +16,7 @@ class _Ipc:
         self.texts: list[str] = []
         self.vf = [{"name": "vapoursynth", "label": "fluid"}]
 
-    def get(self, name):
+    def get(self, name, *, timeout=None):
         if name == "vf":
             return self.vf
         if name == "hwdec":
