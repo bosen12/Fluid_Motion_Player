@@ -190,6 +190,17 @@ def iter_mpv_processes() -> list[PlayerProcess]:
             proc = psutil.Process(pid)
             name = proc.name()
             exe = proc.exe() or ""
+        except psutil.NoSuchProcess:
+            # The pipe named a pid that is not running -- it outlived its owner,
+            # or the name was never a player's to begin with. Skipped rather
+            # than described: the fallback below exists for a process that is
+            # there but will not say what it is, and reusing it here invented a
+            # player instead. That is not only a wrong card in the UI. Player
+            # count drives allow_ambiguous in tick(), so one phantom entry
+            # takes a genuinely single-player machine off the ambiguous pipe
+            # names -- which for an mpv.conf that sets
+            # input-ipc-server=mpvsocket are the only way in at all.
+            continue
         except (psutil.Error, OSError):
             name, exe = "embedded-mpv", ""
         found.append(PlayerProcess(pid=pid, name=name, exe=exe, label=display_label(name, exe)))

@@ -385,3 +385,37 @@ def test_a_player_whose_vf_cannot_be_read_is_left_alone(monkeypatch, engine_with
 
     assert applied == [], "re-applied on the strength of a reading that never arrived"
     assert ipc.commands == [], "a vf command went to an mpv that was not answering"
+
+
+# -- a pipe is not proof of a player --------------------------------------
+def test_a_pipe_naming_a_dead_pid_does_not_invent_a_player(monkeypatch):
+    """Embedded hosts are discovered from named pipes rather than a process
+    name, and the fallback for "the process is there but will not say what it
+    is" was reused for "the process is not there", inventing a player.
+
+    Not only a wrong card in the UI. tick() derives allow_ambiguous from the
+    player count, so one phantom entry takes a genuinely single-player machine
+    off the ambiguous pipe names -- and for an mpv.conf that sets
+    input-ipc-server=mpvsocket those are the only way in at all.
+    """
+    from fluid_motion.core import mpv_detect
+
+    monkeypatch.setattr(mpv_detect, "list_win_pipes", lambda: ["fluid-mpv-999999"])
+    monkeypatch.setattr(mpv_detect, "psutil", mpv_detect.psutil)
+
+    assert mpv_detect.iter_mpv_processes() == []
+
+
+def test_a_pipe_naming_a_live_process_is_still_a_player(monkeypatch):
+    """The control: the discovery this protects has to keep working."""
+    import os
+
+    from fluid_motion.core import mpv_detect
+
+    monkeypatch.setattr(
+        mpv_detect, "list_win_pipes", lambda: [f"fluid-mpv-{os.getpid()}"]
+    )
+
+    found = mpv_detect.iter_mpv_processes()
+
+    assert [p.pid for p in found] == [os.getpid()]
