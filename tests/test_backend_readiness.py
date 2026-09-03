@@ -329,6 +329,40 @@ def test_a_changed_backend_is_re_applied_rather_than_left_running(monkeypatch):
     assert told == ["trt", "ncnn"], "the filter kept running on the old backend"
 
 
+def test_the_key_and_the_script_cannot_disagree_about_the_backend(monkeypatch):
+    """_apply_to used to resolve the backend twice, either side of the apply
+    lock, and that lock blocks for as long as another apply takes -- seconds,
+    while mpv rebuilds its pipeline. A vendor set that moved in between (the
+    nvidia-smi snapshot expires every 1.5s) recorded one backend in the key and
+    wrote the other into the .vpy. Once the vendors settled back, the key
+    matched again and nothing ever re-applied: mpv ran the wrong backend for
+    the rest of the session.
+    """
+    from fluid_motion.config import Settings
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(enabled=True, mpv_root="Z:/cfg"))
+    # A backend that answers differently on each call is what the race looks
+    # like from inside _apply_to.
+    answers = iter(["trt", "ncnn", "ncnn", "ncnn"])
+    monkeypatch.setattr(engine, "_backend", lambda: next(answers))
+
+    told: dict[str, str | None] = {}
+    monkeypatch.setattr(
+        watcher_mod, "apply",
+        lambda ipc, s, root, *, announce=False, info=None, pid=None, backend=None: (
+            told.update(backend=backend) or Path("x.vpy")
+        ),
+    )
+    monkeypatch.setattr(watcher_mod, "player_config_dir", lambda _i: Path("Z:/p"))
+
+    engine._apply_to(99, _FakeIpc(), 2, info={"container_fps": 24, "display_fps": 60})
+
+    assert engine._applied[99][-2] == told["backend"], (
+        "the key describes a different backend from the script that was written"
+    )
+
+
 def test_apply_is_told_the_backend_rather_than_deriving_its_own(monkeypatch):
     """One decision, used everywhere. The watcher already resolves the backend
     for _filter_key and for the readiness verdict; apply() deriving a third
@@ -342,6 +376,48 @@ def test_apply_is_told_the_backend_rather_than_deriving_its_own(monkeypatch):
 
     assert told == ["ncnn"], "apply() was not handed the resolved backend"
     assert None not in told, "apply() was left to work it out for itself"
+
+
+def test_ncnn_does_not_scan_a_tensorrt_engine_cache(monkeypatch):
+    """ncnn compiles no engines, so there is nothing to size and nothing that
+    can grow -- and the panel that shows it is hidden on that backend.
+
+    Not free to leave in: a machine that switched over from TensorRT still has
+    the old engines on disk, and that scan measured 6.4 ms, i.e. 382 ms/minute
+    on the active housekeeping cadence.
+    """
+    from fluid_motion.core import gpu
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine, _ = _engine_with_one_player(monkeypatch, [{gpu.AMD}])
+    scans = []
+    monkeypatch.setattr(
+        watcher_mod, "engine_cache_info",
+        lambda: scans.append(1) or engine._engine_cache,
+    )
+    engine._housekeeping_at = 0.0  # force the housekeeping half to run
+
+    engine.tick()
+
+    assert scans == [], "an ncnn machine walked the TensorRT engine cache"
+    assert engine._engine_growing_until == 0.0, "ncnn cannot be compiling an engine"
+
+
+def test_tensorrt_still_scans_its_engine_cache(monkeypatch):
+    from fluid_motion.core import gpu
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine, _ = _engine_with_one_player(monkeypatch, [{gpu.NVIDIA}])
+    scans = []
+    monkeypatch.setattr(
+        watcher_mod, "engine_cache_info",
+        lambda: scans.append(1) or engine._engine_cache,
+    )
+    engine._housekeeping_at = 0.0
+
+    engine.tick()
+
+    assert scans, "the engine cache reading the UI shows was never taken"
 
 
 # -- the UI stops claiming CUDA on a machine that has none ------------------

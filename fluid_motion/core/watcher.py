@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings, save_settings
-from fluid_motion.paths import heartbeat_path, hotkey_path, seek_hold_path
+from fluid_motion.paths import engine_cache_dir, heartbeat_path, hotkey_path, seek_hold_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
-from fluid_motion.core.engine_cache import info as engine_cache_info, next_growth_deadline
+from fluid_motion.core.engine_cache import (
+    CacheInfo,
+    info as engine_cache_info,
+    next_growth_deadline,
+)
 from fluid_motion.core.gpu import (
     available_vendors,
     detect_adapters,
@@ -46,6 +50,7 @@ from fluid_motion.core.mpv_detect import PlayerProcess, find_mpv_executable, ite
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
 from fluid_motion.core.runtime import RuntimeStatus, diagnose, missing_labels
 from fluid_motion.core.vs_script import (
+    BACKEND_NCNN,
     effective_backend,
     parse_fps,
     resolve_backend,
@@ -400,7 +405,7 @@ class Engine:
         if dropped is not None:
             self._drops[pid] = dropped
 
-    def _filter_key(self, multi: int) -> tuple:
+    def _filter_key(self, multi: int, backend: str | None = None) -> tuple:
         """Everything that changes the generated .vpy, plus the resolved multi.
 
         multi is part of the key so that switching to a file with a different
@@ -434,7 +439,17 @@ class Engine:
             #
             # Before multi, not after: multi is last by convention and a test
             # reads it as key[-1].
-            self._backend(),
+            #
+            # `backend` is passed in by _apply_to so the key and the file it is
+            # recorded for describe the same one. Resolving it here in both
+            # places instead left a window: _apply_to builds the key, then
+            # blocks on the apply lock -- for as long as another apply takes,
+            # which is seconds while mpv rebuilds its pipeline -- and only then
+            # writes the script. A vendor set that moved in between (the
+            # nvidia-smi snapshot expires every 1.5s) gave the key one backend
+            # and the .vpy another, and once it settled back the key matched
+            # again, so nothing ever re-applied.
+            backend if backend is not None else self._backend(),
             int(multi),
         )
 
@@ -461,7 +476,9 @@ class Engine:
         reconciles it. wait=-1 blocks; a UI-thread caller passes a short wait so
         a slow apply cannot freeze the window.
         """
-        key = self._filter_key(multi)
+        # Resolved once, for both the key and the script. See _filter_key.
+        backend = self._backend()
+        key = self._filter_key(multi, backend)
         if not self._apply_lock.acquire(timeout=wait):
             self._invalidate(pid)
             return False
@@ -474,7 +491,7 @@ class Engine:
             root = player_config_dir(ipc) or Path(self.settings.mpv_root)
             apply(
                 ipc, self.settings, root,
-                announce=announce, info=info, pid=pid, backend=self._backend(),
+                announce=announce, info=info, pid=pid, backend=backend,
             )
         except IpcError as exc:
             gone = is_disconnect_error(str(exc))
@@ -746,13 +763,24 @@ class Engine:
             self._housekeeping_at = now + (
                 HOUSEKEEPING_ACTIVE if (live or self._bootstrapping) else HOUSEKEEPING_IDLE
             )
-            cache = engine_cache_info()
-            self._engine_growing_until = next_growth_deadline(
-                cache.total_bytes, self._engine_bytes, now, self._engine_growing_until, ENGINE_GROWTH_GRACE
-            )
+            backend = self._backend()
+            # The engine cache is a TensorRT artefact: ncnn compiles nothing,
+            # so there is nothing to size, nothing that can grow, and the panel
+            # that displays it is hidden. Skipped rather than scanned for a
+            # reading nobody consumes -- and on a machine that switched over
+            # from TensorRT the directory is still full, which measured 6.4 ms
+            # a scan, i.e. 382 ms/minute on the active cadence.
+            if backend == BACKEND_NCNN:
+                cache = CacheInfo(path=str(engine_cache_dir()))
+                self._engine_growing_until = 0.0
+            else:
+                cache = engine_cache_info()
+                self._engine_growing_until = next_growth_deadline(
+                    cache.total_bytes, self._engine_bytes, now, self._engine_growing_until, ENGINE_GROWTH_GRACE
+                )
             self._engine_bytes = cache.total_bytes
             gpu = gpu_snapshot()
-            runtime = diagnose(self.settings.mpv_root, backend=self._backend())
+            runtime = diagnose(self.settings.mpv_root, backend=backend)
             # Dropped rather than refreshed in place: the next tick re-reads
             # only the dirs it actually has players in, and a directory that
             # became ready (the installer just finished) has to be picked up.
@@ -923,7 +951,13 @@ class Engine:
                     self._bootstrap_progress = ratio
 
                 root = self.install_root()
-                install_runtime(root, cb, backend=self._backend())
+                # Resolved once for the install and the verdict that follows.
+                # Asking twice would let a several-minute download finish
+                # against one backend and then be judged against another, so
+                # the panel would report a runtime it had just installed
+                # correctly as still missing.
+                backend = self._backend()
+                install_runtime(root, cb, backend=backend)
                 install_lua(root)
                 ensure_input_binding(root)
                 # Remember it: the readiness panel reads diagnose(mpv_root),
@@ -931,7 +965,7 @@ class Engine:
                 # the freshly installed runtime as still missing.
                 if str(root) != str(self.settings.mpv_root):
                     self.update_settings(mpv_root=str(root))
-                self._runtime = diagnose(root, backend=self._backend())
+                self._runtime = diagnose(root, backend=backend)
             except Exception as exc:  # noqa: BLE001
                 self._error = str(exc)
                 self._bootstrap_message = f"安裝失敗：{exc}"
