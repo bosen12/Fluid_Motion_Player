@@ -910,6 +910,17 @@ class Engine:
         else:
             save_settings(self.settings)
 
+    def report(self, message: str) -> None:
+        """Say something to the user from a bridge action.
+
+        The bridge has no other channel: its methods either succeed silently or
+        raise, and a result the user needs to know about -- engines that could
+        not be deleted because they are in use -- had nowhere to go. Shown the
+        same way an error is; empty clears it, so a successful retry takes the
+        previous complaint down with it.
+        """
+        self._error = message
+
     def state(self) -> dict[str, Any]:
         with self._lock:
             players = [p.to_dict() for p in self._players]

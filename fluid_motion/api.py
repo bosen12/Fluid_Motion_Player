@@ -51,8 +51,20 @@ class Bridge:
 
     def clear_engine_cache(self) -> dict[str, Any]:
         from fluid_motion.core.engine_cache import clear
+        from fluid_motion.log import log
 
-        clear()
+        deleted, locked = clear()
+        log(f"engine cache cleared: {deleted} removed, {locked} in use")
+        # clear() has always counted what it could not delete and the caller
+        # has always thrown that away. Locked is the *ordinary* case, not an
+        # edge one: a TensorRT engine is mapped while the filter is running, so
+        # clearing during playback silently half-works and the panel just shows
+        # a number that did not drop. Say which, and say what to do about it.
+        self.engine.report(
+            f"有 {locked} 個 engine 正在使用中,無法刪除。關閉播放器後再清除一次即可。"
+            if locked
+            else ""
+        )
         return self.get_state()
 
     def open_engine_cache(self) -> None:
