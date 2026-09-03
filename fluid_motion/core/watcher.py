@@ -218,6 +218,15 @@ class Engine:
             ipc.close()
 
     def _write_heartbeat(self) -> None:
+        # Never after stop(). A tick still in flight would otherwise recreate
+        # the file stop() has just deleted, and the lua reads a fresh
+        # timestamp as "Fluid Motion is running". Its strip_stale() runs only
+        # at file load -- there is no periodic sweep -- so the next file
+        # opened inside the lua's four-second alive window keeps a filter that
+        # nothing is maintaining any more, with hwdec stranded on copy-back
+        # until this app runs again.
+        if self._stop.is_set():
+            return
         try:
             heartbeat_path().write_text(str(time.time()), encoding="utf-8")
         except OSError:
@@ -509,6 +518,14 @@ class Engine:
             self._invalidate(pid)
             return False
         try:
+            # Same reason _write_heartbeat bails: stop() takes the filter off
+            # every player and then the process exits, so an apply that only
+            # won the lock afterwards would put it straight back on and leave
+            # it there, owned by nobody. The lock serialises these two but
+            # says nothing about their order, and the loop threads are daemons
+            # that stop() never joins, so the ordering guard has to be here.
+            if self._stop.is_set():
+                return False
             # This player's own config dir, not the globally configured root:
             # the .vpy is only loadable by the mpv that will read it, and a
             # single setting cannot be right for an embedded host and a
