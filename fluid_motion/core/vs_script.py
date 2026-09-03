@@ -73,6 +73,17 @@ BACKEND_NCNN = "ncnn"
 BACKEND_SETTINGS = ("auto", "nvidia", "amd")
 
 
+def backend_label(backend: str) -> str:
+    """What to call the backend anywhere a person reads it.
+
+    The generated .vpy header and mpv's OSD line both say this; app.js's
+    backendName() is the same wording on the web side. One helper because the
+    OSD line was left hardcoded to "TensorRT" when the ncnn path went in, so
+    an AMD machine was told it was running a backend it does not have.
+    """
+    return "ncnn / Vulkan" if backend == BACKEND_NCNN else "TensorRT"
+
+
 @dataclass
 class RifeParams:
     model: int = RIFE_426
@@ -232,7 +243,7 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
         # num_streams is pinned to 1 instead of following trt_streams: it is a
         # real tuning knob, but tuning it needs a measurement nobody with this
         # code has been able to take, and one stream is the safe end of it.
-        backend_label = "ncnn / Vulkan"
+        label = backend_label(params.backend)
         mode_note = "cross-vendor backend — untested on AMD hardware"
         accel_consts = (
             f"NCNN_FP16 = {bool(params.fp16)}\n"
@@ -244,7 +255,7 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
         output_format=1,
     ),"""
     else:
-        backend_label = "TensorRT"
+        label = backend_label(params.backend)
         accel_consts = (
             f"TRT_FP16 = {bool(params.fp16)}\n"
             f"TRT_STREAMS = {int(streams)}\n"
@@ -262,7 +273,7 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
         output_format=1{engine_arg},
     ),"""
 
-    return f'''# Fluid Motion — RIFE {backend_label} (generated, do not edit)
+    return f'''# Fluid Motion — RIFE {label} (generated, do not edit)
 # GPU: {gpu_note} — {mode_note}
 import os
 import sys

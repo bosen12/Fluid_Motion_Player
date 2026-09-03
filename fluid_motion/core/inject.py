@@ -11,6 +11,7 @@ from fluid_motion.core.gpu import snapshot as gpu_snapshot
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc
 from fluid_motion.core.vs_script import (
     RifeParams,
+    backend_label,
     parse_fps,
     resolve_backend,
     rife_label,
@@ -742,7 +743,13 @@ def apply(
     _sync_playback_props(ipc)
     if announce:
         try:
-            ipc.command("show-text", f"Fluid Motion  {rife_label(settings.rife_model)} TensorRT")
+            # The backend that was actually resolved, not a hardcoded name:
+            # this line said "TensorRT" on every machine, including the AMD
+            # ones the ncnn path exists for.
+            ipc.command(
+                "show-text",
+                f"Fluid Motion  {rife_label(settings.rife_model)} {backend_label(backend)}",
+            )
         except IpcError:
             pass
     return script
