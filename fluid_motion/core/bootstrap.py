@@ -417,6 +417,25 @@ def install_lua(mpv_root: Path) -> Path:
     return dest
 
 
+def lua_is_current(mpv_root: Path) -> bool:
+    """Whether this config dir already holds the script this build ships.
+
+    Compared as *text*, never as bytes. install_lua writes through write_text,
+    which on Windows turns every \\n into \\r\\n, so the file on disk is bigger
+    than the resource it was copied from -- measured on this machine, 4932
+    bytes against 4764, for a file that is character-for-character identical.
+    read_text normalises line endings on the way in, so both sides arrive with
+    \\n. A bytes comparison would answer "differs" every single time, rewrite
+    the script on every check, and raise needs_restart permanently.
+    """
+    src = resources_dir() / "zz-fluid-ipc.lua"
+    dest = mpv_root / "scripts" / "zz-fluid-ipc.lua"
+    try:
+        return dest.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 FLUID_VF_TOGGLE = '@fluid:vapoursynth="~~/shaders/fluid_rife.vpy":4:1'
 
 

@@ -189,20 +189,60 @@ def test_the_ipc_script_is_installed_into_the_players_own_config_dir(monkeypatch
     assert 7 in engine._needs_restart, "mpv only loads scripts at launch"
 
 
-def test_an_existing_script_is_left_alone(monkeypatch, tmp_path):
+def test_an_out_of_date_script_is_replaced(monkeypatch, tmp_path):
+    """This assertion used to read the other way -- "an existing script is left
+    alone" -- and that froze every config dir on whichever version of the
+    script it first received.
+
+    The script is not static: six revisions between v1.0.0 and v1.4.5, and the
+    v1.0.0 one is 192 characters against today's 4742. Among what it lacks is
+    the per-player seek_hold file (d0b1e76); without that, a seek in one player
+    tears the filter off every other connected player. Meanwhile start() has
+    always rewritten settings.mpv_root's copy on every launch -- so the only
+    directory that stayed current was the one AX Player does not use.
+    """
     from fluid_motion.core import watcher as watcher_mod
 
     engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path / "configured")))
     root = tmp_path / "player"
     (root / "scripts").mkdir(parents=True)
-    (root / "scripts" / "zz-fluid-ipc.lua").write_text("-- someone else's", encoding="utf-8")
+    (root / "scripts" / "zz-fluid-ipc.lua").write_text("-- an older build's", encoding="utf-8")
+    installed: list[Path] = []
+    monkeypatch.setattr(watcher_mod, "install_lua", lambda r: installed.append(Path(r)))
+    monkeypatch.setattr(watcher_mod, "ensure_input_binding", lambda r: None)
+
+    engine._ensure_player_scripts(root, pid=7)
+
+    assert installed == [root], "a stale script stayed stale"
+    assert 7 in engine._needs_restart, "mpv only loads scripts at launch"
+
+
+def test_a_script_that_is_already_current_is_not_rewritten(monkeypatch, tmp_path):
+    """The other half, and the one with the trap in it.
+
+    install_lua writes through write_text, so on Windows the file on disk gets
+    \\r\\n where the packaged resource has \\n -- 4932 bytes against 4764, for
+    text that is identical. Compare the two as bytes and every check answers
+    "differs": the script is rewritten every session and needs_restart is
+    raised forever, so the panel permanently asks the user to restart a player
+    that is already running exactly the right script.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.bootstrap import install_lua
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path / "configured")))
+    root = tmp_path / "player"
+    install_lua(root)  # the real writer, so the line endings are the real ones
+    on_disk = (root / "scripts" / "zz-fluid-ipc.lua").read_bytes()
+
     installed: list[Path] = []
     monkeypatch.setattr(watcher_mod, "install_lua", lambda r: installed.append(Path(r)))
 
     engine._ensure_player_scripts(root, pid=7)
 
-    assert installed == []
-    assert 7 not in engine._needs_restart
+    assert installed == [], "rewrote a script that was already current"
+    assert 7 not in engine._needs_restart, "asked for a restart with nothing to load"
+    assert (root / "scripts" / "zz-fluid-ipc.lua").read_bytes() == on_disk
 
 
 # -- naming the player -----------------------------------------------------

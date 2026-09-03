@@ -131,16 +131,31 @@ def _embedded_player_pids(seen: set[int]) -> set[int]:
     whatever wraps it.
 
     zz-fluid-ipc.lua is supposed to open a `fluid-mpv-<pid>` named pipe, but
-    in practice this mpv config also ships mpvSockets.lua, and Lua scripts
-    load alphabetically -- "zz-" guarantees zz-fluid-ipc.lua loads *last*.
-    mpvSockets.lua claims `input-ipc-server` first (binding it to
-    `%TEMP%\\mpvSockets\\<pid>`); mpv's IPC listener is only ever bound once,
-    so zz-fluid-ipc.lua's later rebind to `fluid-mpv-<pid>` is silently a
-    no-op and that pipe never actually exists. This is true for *every* mpv
-    instance using this config, embedded or standalone -- confirmed by
-    checking a live instance's pipes directly. mpvSockets.lua's own
-    pid-named pipe is the one that's real, and it's already among
-    candidate_pipes()'s fallback names, so just discover the pid from it.
+    in practice this mpv config also ships mpvSockets.lua and that pipe never
+    appears. Measured against a live instance of the real C:\\mpv config:
+
+        input-ipc-server = '%TEMP%/mpvSockets/11464'
+        F3 binding owner = 'zz_fluid_ipc'
+        new pipes        = ['%TEMP%\\mpvSockets\\11464']   (no fluid-mpv-*)
+
+    The F3 owner is the part that matters: zz-fluid-ipc.lua **did** load and
+    **did** run its set_property, and the value that survived is still
+    mpvSockets'. So the listener is not "bound once, first writer wins" --
+    this docstring used to say that, and it is wrong. mpv rebinds when the
+    option changes, the last writer wins, and mpvSockets is the last writer
+    even though "zz-" makes our script load after it: mpvSockets.lua calls
+    `utils.subprocess({args={"cmd","/c","mkdir",...}})` on the line *before*
+    its set_property, which yields to mpv's event loop, so every other script
+    -- ours included -- loads and writes while it waits, and then it resumes
+    and overwrites. Load order is not write order once a script blocks.
+
+    (ax_player/player_widget.py measured the same rebinding from the other
+    side: an init option handed to libmpv also loses to mpvSockets.)
+
+    True for *every* mpv instance using this config, embedded or standalone.
+    mpvSockets.lua's own pid-named pipe is the one that's real, and it's
+    already among candidate_pipes()'s fallback names, so just discover the pid
+    from it.
     """
     pids: set[int] = set()
     for raw in list_win_pipes():

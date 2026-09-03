@@ -9,7 +9,7 @@ from typing import Any
 from fluid_motion.config import Settings, save_settings
 from fluid_motion.log import log, log_exc
 from fluid_motion.paths import engine_cache_dir, heartbeat_path, hotkey_path, seek_hold_path
-from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
+from fluid_motion.core.bootstrap import ensure_input_binding, install_lua, lua_is_current
 from fluid_motion.core.engine_cache import (
     CacheInfo,
     info as engine_cache_info,
@@ -381,15 +381,31 @@ class Engine:
         F3 binding at all), no post-seek hold-off, and no stale-filter
         cleanup when this app goes away.
 
-        Only ever adds a missing file; an existing one is left alone. mpv
-        loads scripts at launch, so a player that is already running has to be
-        restarted before it takes effect -- which is what needs_restart says.
+        Installs when the file is missing *or* out of date. It used to skip
+        any directory that already had one, which froze that player on
+        whichever version of the script it first received. The script is not
+        static: six revisions between v1.0.0 and v1.4.5, and the v1.0.0 one is
+        192 characters against today's 4742 -- no seek hold-off, no
+        stale-filter strip, and no per-player seek_hold file, whose absence
+        (d0b1e76) tears the filter off *every other* connected player on any
+        seek. Measured by replaying it: an old script in a config dir survived
+        _ensure_player_scripts untouched and the player was not even flagged
+        for restart, while start() went on rewriting settings.mpv_root's copy
+        every launch. So the one directory that stayed current was the one
+        AX Player does not use.
+
+        The comparison is lua_is_current's, which is text and not bytes for
+        the reason documented there.
+
+        mpv loads scripts at launch, so a player that is already running has
+        to be restarted before either an install or an update takes effect --
+        which is what needs_restart says.
         """
         key = str(root)
         if key in self._scripted:
             return
         self._scripted.add(key)
-        if (root / "scripts" / "zz-fluid-ipc.lua").is_file():
+        if lua_is_current(root):
             return
         try:
             install_lua(root)
