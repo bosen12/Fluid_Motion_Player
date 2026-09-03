@@ -157,6 +157,14 @@ class Engine:
         self._hotkey_thread: threading.Thread | None = None
         self._on_change: Callable[[], None] | None = None
         self._on_show: Callable[[], None] | None = None
+        # A "show" that arrived before there was a window to show. start()
+        # launches the hotkey thread, and app.main() only wires _on_show after
+        # `import webview`, create_window and the tray handshake -- so a second
+        # copy launched during that gap writes "show", exits, and its request
+        # lands on nobody. _consume_hotkey unlinks the file before dispatching,
+        # so without this it is gone and nothing retries: the user clicked the
+        # icon and the window never appears.
+        self._pending_show = False
 
     def start(
         self,
@@ -202,6 +210,16 @@ class Engine:
 
     def set_on_show(self, on_show: Callable[[], None] | None) -> None:
         self._on_show = on_show
+        # Only a request that actually arrived is replayed. Raising the window
+        # unconditionally here would fire on every launch and defeat
+        # --start-hidden, which is how autostart runs: the point is to hand
+        # over a click that was already made, not to invent one.
+        if on_show is not None and self._pending_show:
+            self._pending_show = False
+            try:
+                on_show()
+            except Exception:  # noqa: BLE001 — a failed show must not kill startup
+                pass
 
     def stop(self) -> None:
         self._stop.set()
@@ -622,11 +640,17 @@ class Engine:
                 else:
                     want = not self.settings.enabled
                 self.set_enabled(want)
-            elif text == "show" and self._on_show:
-                try:
-                    self._on_show()
-                except Exception:
-                    pass
+            elif text == "show":
+                if self._on_show is None:
+                    # Held, not dropped -- see _pending_show. The file is
+                    # already unlinked above, so this flag is the only thing
+                    # left carrying the request.
+                    self._pending_show = True
+                else:
+                    try:
+                        self._on_show()
+                    except Exception:
+                        pass
         finally:
             self._in_hotkey = False
 
