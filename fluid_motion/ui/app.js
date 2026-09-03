@@ -23,6 +23,20 @@ function modelLabel(id) {
   return hit ? `RIFE ${hit.label}` : "RIFE";
 }
 
+// The setting, not the resolved backend: "自動" is a real choice the user can
+// hold, and collapsing it into whatever it happens to resolve to today would
+// hide that a dual-vendor machine is being decided for them.
+const BACKENDS = [
+  { id: "auto", label: "自動" },
+  { id: "nvidia", label: "NVIDIA" },
+  { id: "amd", label: "AMD" },
+];
+
+// state.backend is the *resolved* id from vs_script, not the setting.
+function backendLabel(resolved) {
+  return resolved === "ncnn" ? "ncnn · Vulkan" : "TensorRT · CUDA";
+}
+
 const mock = {
   settings: {
     enabled: false,
@@ -30,6 +44,7 @@ const mock = {
     scene_threshold: 0.1,
     rife_model: 426,
     autostart: false,
+    backend: "auto",
   },
   players: [],
   gpu: {
@@ -57,6 +72,8 @@ const mock = {
   gpu_safe_mode: true,
   engine_cache: { count: 0, total_bytes: 0, path: "" },
   engine_compiling: false,
+  backend: "trt",
+  adapters: ["NVIDIA GeForce RTX 5070 Ti"],
 };
 
 function api() {
@@ -177,6 +194,18 @@ function renderProfiles(active) {
 function renderModels(active) {
   const root = chipGroup("models", MODELS, "data-model");
   markPressed(root, (btn) => Number(btn.dataset.model) === Number(active));
+}
+
+function renderBackends(active, resolved, adapters) {
+  const root = chipGroup("backends", BACKENDS, "data-backend");
+  markPressed(root, (btn) => btn.dataset.backend === String(active));
+  // Adapter names come from the driver registry, so they go in through an
+  // attribute assignment rather than innerHTML -- no escaping question to get
+  // wrong later.
+  const names = (adapters || []).join("、");
+  root.title = names
+    ? `偵測到:${names}\n目前使用:${backendLabel(resolved)}`
+    : `目前使用:${backendLabel(resolved)}`;
 }
 
 function renderScenePresets(value) {
@@ -322,6 +351,7 @@ function render(state) {
   renderPlayers(state.players || []);
   renderProfiles(state.settings.profile);
   renderModels(state.settings.rife_model);
+  renderBackends(state.settings.backend, state.backend, state.adapters);
   renderChecks(state.runtime.checks);
 
   $("scene").value = state.settings.scene_threshold;
@@ -374,9 +404,9 @@ function render(state) {
       ? `輸出偏低 · 目標 ${target} · 實測 ${outLabel} — 效能不足`
       : "輸出偏低 — 效能不足";
   } else if (connected === 0) {
-    engine.textContent = `${modelLabel(state.settings.rife_model)} · TensorRT · CUDA · 等待 mpv`;
+    engine.textContent = `${modelLabel(state.settings.rife_model)} · ${backendLabel(state.backend)} · 等待 mpv`;
   } else {
-    engine.textContent = `${modelLabel(state.settings.rife_model)} · TensorRT · CUDA · 場景偵測已就緒`;
+    engine.textContent = `${modelLabel(state.settings.rife_model)} · ${backendLabel(state.backend)} · 場景偵測已就緒`;
   }
 }
 
@@ -417,6 +447,12 @@ function bind() {
     if (!btn) return;
     renderProfiles(btn.dataset.profile);
     await command("set_profile", btn.dataset.profile);
+  });
+
+  $("backends").addEventListener("click", async (event) => {
+    const btn = event.target.closest("[data-backend]");
+    if (!btn) return;
+    await command("set_backend", btn.dataset.backend);
   });
 
   $("models").addEventListener("click", async (event) => {

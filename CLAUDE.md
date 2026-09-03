@@ -78,6 +78,38 @@ one. `snapshot_playback` therefore reports `vf_ok` separately, and a tick that
 cannot read `vf` leaves the recorded state alone. Preserve that distinction if
 you touch the snapshot or the tick's decision chain.
 
+### Two backends, one of them unverified
+
+`vs_script.resolve_backend` picks TensorRT (`Backend.TRT`) or ncnn over Vulkan
+(`Backend.NCNN_VK`) from the `backend` setting and the adapters
+`gpu.detect_adapters()` finds in the driver registry.
+
+**Nobody working on this repo has AMD hardware.** The ncnn path is verified as
+far as it can be — the plugin archive exists and holds exactly `vsncnn.dll`,
+the pinned `vsmlrt.py` really does define `Backend.NCNN_VK`, `RIFE()` accepts
+it, the generated script parses — and no further. That it *interpolates* on an
+AMD GPU is untested. Three rules hold that risk down; keep them:
+
+1. **NVIDIA wins every tie, and so does a failed probe.** Mixed machines are
+   ordinary (the dev box reports an RTX 5070 Ti beside a Ryzen iGPU), and an
+   empty vendor set means "could not tell", never "no NVIDIA". A machine that
+   works today must not be moved onto the untested path by a reading that did
+   not arrive.
+2. **`diagnose()` demands the backend's own accelerator.** An AMD tree without
+   `vsncnn.dll` reports not ready rather than ready-with-nothing-to-run — mpv
+   would otherwise say only "could not init VS".
+3. **The NVIDIA output is pinned.** `test_an_nvidia_gpu_still_gets_exactly_the_
+   tensorrt_backend_it_did_before` fixes the `Backend.TRT` call and its
+   parameters. The rendered script is byte-identical to what shipped before the
+   AMD work; if you change it, that is a decision, not a refactor.
+
+TensorRT-only concepts are absent from the ncnn script rather than translated:
+no `engine_folder` (it builds no engines, so the engine cache does not apply)
+and no CUDA-graph flicker gate. `NCNN_STREAMS` is pinned to 1 because tuning it
+needs a measurement nobody here can take. Installing follows the same split —
+2.6 GB of CUDA for TensorRT, a 2.7 MB single-DLL archive for ncnn, which gets
+Vulkan from the display driver.
+
 Other invariants:
 
 - The `.vpy` is written into, and loaded from, **the config dir of the player

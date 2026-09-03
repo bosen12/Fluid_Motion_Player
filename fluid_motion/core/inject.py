@@ -6,9 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from fluid_motion.config import Settings
+from fluid_motion.core.gpu import available_vendors
 from fluid_motion.core.gpu import snapshot as gpu_snapshot
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc
-from fluid_motion.core.vs_script import RifeParams, parse_fps, rife_label, target_multi, write_vpy
+from fluid_motion.core.vs_script import (
+    RifeParams,
+    parse_fps,
+    resolve_backend,
+    rife_label,
+    target_multi,
+    write_vpy,
+)
 from fluid_motion.paths import engine_cache_dir, script_output_path
 
 
@@ -666,6 +674,7 @@ def apply(
     source = parse_fps(info.get("container_fps") or info.get("fps"))
     display = info.get("display_fps")
     script = script_output_path(mpv_root)
+    backend = resolve_backend(settings.backend, available_vendors())
     params = RifeParams(
         model=settings.rife_model,
         scene_threshold=settings.scene_threshold,
@@ -673,10 +682,14 @@ def apply(
         fp16=settings.fp16,
         cuda_graph=settings.cuda_graph,
         profile=settings.profile,
+        # TensorRT builds engines ahead of time and caches them here; ncnn
+        # builds none, and render_vpy drops this rather than emitting a path
+        # to a backend that has nowhere to put it.
         engine_folder=str(engine_cache_dir()),
         mpv_root=str(mpv_root),
         gpu_name=gpu_snapshot().name,
         force_accel=settings.force_accel,
+        backend=backend,
     )
     write_vpy(script, params, source_fps=source, display_fps=display)
     multi = resolve_multi(info, settings)

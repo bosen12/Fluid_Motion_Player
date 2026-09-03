@@ -31,6 +31,13 @@ class Bridge:
         self.engine.update_settings(scene_threshold=float(value))
         return self.get_state()
 
+    def set_backend(self, backend: str) -> dict[str, Any]:
+        # Validated in Settings.from_dict, same as every other setter here:
+        # anything unrecognised falls back to "auto" rather than pinning the
+        # machine to a backend its GPU cannot run.
+        self.engine.update_settings(backend=str(backend))
+        return self.get_state()
+
     def set_autostart(self, enabled: bool) -> dict[str, Any]:
         from fluid_motion.paths import launch_command
 

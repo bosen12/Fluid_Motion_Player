@@ -10,7 +10,12 @@ from fluid_motion.config import Settings, save_settings
 from fluid_motion.paths import heartbeat_path, hotkey_path, seek_hold_path
 from fluid_motion.core.bootstrap import ensure_input_binding, install_lua
 from fluid_motion.core.engine_cache import info as engine_cache_info, next_growth_deadline
-from fluid_motion.core.gpu import flicker_risk, snapshot as gpu_snapshot
+from fluid_motion.core.gpu import (
+    available_vendors,
+    detect_adapters,
+    flicker_risk,
+    snapshot as gpu_snapshot,
+)
 from fluid_motion.core.inject import (
     SEEK_HOLD_MAX_AGE,
     SETTLE_SECONDS,
@@ -40,7 +45,12 @@ from fluid_motion.core.inject import (
 from fluid_motion.core.mpv_detect import PlayerProcess, find_mpv_executable, iter_mpv_processes, mpv_root_from
 from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
 from fluid_motion.core.runtime import RuntimeStatus, diagnose, missing_labels
-from fluid_motion.core.vs_script import effective_backend, parse_fps, target_multi
+from fluid_motion.core.vs_script import (
+    effective_backend,
+    parse_fps,
+    resolve_backend,
+    target_multi,
+)
 
 ENGINE_GROWTH_GRACE = 3.0
 # How often the housekeeping half of tick() runs -- the TensorRT engine-cache
@@ -88,7 +98,7 @@ class Engine:
         self._ipc: dict[int, MpvIpc] = {}
         self._players: list[PlayerProcess] = []
         self._gpu = gpu_snapshot()
-        self._runtime = diagnose(settings.mpv_root)
+        self._runtime = diagnose(settings.mpv_root, backend=self._backend())
         self._error = ""
         self._bootstrap_message = ""
         self._bootstrap_progress = 0.0
@@ -104,7 +114,7 @@ class Engine:
         # by directory (two players can share one) and refreshed with the rest
         # of the housekeeping; diagnose() measures 0.33ms, so the cache is
         # about not doing it three times a second rather than about cost.
-        self._runtime_cache: dict[str, RuntimeStatus] = {}
+        self._runtime_cache: dict[tuple[str, str], RuntimeStatus] = {}
         # config-dir per pid. mpv answers this over IPC and it cannot change
         # while the process lives, so it is asked once rather than every tick.
         self._config_dirs: dict[int, Path] = {}
@@ -304,11 +314,20 @@ class Engine:
         self._config_dirs[pid] = root
         return root
 
+    def _backend(self) -> str:
+        """The backend that will actually be generated for this machine."""
+        return resolve_backend(self.settings.backend, available_vendors())
+
     def _runtime_for(self, root: Path) -> RuntimeStatus:
-        key = str(root)
+        # Keyed by backend as well as directory: what "ready" requires differs
+        # between them (TensorRT+CUDA vs vsncnn.dll), so a cache keyed on the
+        # path alone would keep answering with the old backend's verdict after
+        # the setting changed.
+        backend = self._backend()
+        key = (str(root), backend)
         status = self._runtime_cache.get(key)
         if status is None:
-            status = diagnose(root)
+            status = diagnose(root, backend=backend)
             self._runtime_cache[key] = status
         return status
 
@@ -718,7 +737,7 @@ class Engine:
             )
             self._engine_bytes = cache.total_bytes
             gpu = gpu_snapshot()
-            runtime = diagnose(self.settings.mpv_root)
+            runtime = diagnose(self.settings.mpv_root, backend=self._backend())
             # Dropped rather than refreshed in place: the next tick re-reads
             # only the dirs it actually has players in, and a directory that
             # became ready (the installer just finished) has to be picked up.
@@ -837,6 +856,11 @@ class Engine:
             "connected": sum(1 for p in players if p.get("connected")),
             "engine_cache": engine_cache,
             "engine_compiling": time.monotonic() < engine_growing_until,
+            # What the setting asked for is already in `settings`; this is what
+            # it actually resolved to, plus the adapters it resolved against,
+            # so the panel can say *why* rather than just what.
+            "backend": self._backend(),
+            "adapters": detect_adapters(),
         }
 
     def install_root(self) -> Path:
@@ -884,7 +908,7 @@ class Engine:
                     self._bootstrap_progress = ratio
 
                 root = self.install_root()
-                install_runtime(root, cb)
+                install_runtime(root, cb, backend=self._backend())
                 install_lua(root)
                 ensure_input_binding(root)
                 # Remember it: the readiness panel reads diagnose(mpv_root),
@@ -892,7 +916,7 @@ class Engine:
                 # the freshly installed runtime as still missing.
                 if str(root) != str(self.settings.mpv_root):
                     self.update_settings(mpv_root=str(root))
-                self._runtime = diagnose(root)
+                self._runtime = diagnose(root, backend=self._backend())
             except Exception as exc:  # noqa: BLE001
                 self._error = str(exc)
                 self._bootstrap_message = f"安裝失敗：{exc}"

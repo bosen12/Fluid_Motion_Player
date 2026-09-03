@@ -236,3 +236,103 @@ def test_render_vpy_is_valid_python_for_a_normal_root():
     import ast
 
     ast.parse(render_vpy(RifeParams(mpv_root=r"C:\mpv", engine_folder=r"C:\cache")))
+
+
+# -- the NVIDIA path must not move -----------------------------------------
+NVIDIA_BACKEND_BLOCK = '''    backend=Backend.TRT(
+        fp16=TRT_FP16,
+        force_fp16=True,
+        tf32=True,
+        use_cuda_graph=TRT_CUDA_GRAPH,
+        static_shape=True,
+        num_streams=TRT_STREAMS,
+        use_jit_convolutions=False,
+        tiling_optimization_level=0,
+        output_format=1,
+        engine_folder=r"C:/cache",
+    ),'''
+
+
+def test_an_nvidia_gpu_still_gets_exactly_the_tensorrt_backend_it_did_before():
+    """The safety net for AMD support: this repo can test the NVIDIA path on
+    real hardware and cannot test the AMD one at all, so the NVIDIA path is
+    pinned rather than trusted.
+
+    Pinned on the backend construction and its parameters, because that is what
+    decides runtime behaviour -- not on a hash of the whole file, which would
+    break on any comment edit and get deleted the first time it cried wolf.
+    """
+    text = render_vpy(
+        RifeParams(
+            model=426,
+            mpv_root=r"C:\mpv",
+            engine_folder=r"C:\cache",
+            gpu_name="NVIDIA GeForce RTX 4070",
+            trt_streams=2,
+            cuda_graph=True,
+            fp16=True,
+        )
+    )
+    assert NVIDIA_BACKEND_BLOCK in text, "the TensorRT backend call changed shape"
+    assert 'engine_folder=r"C:/cache"' in text
+    assert "TRT_STREAMS = 2" in text
+    assert "TRT_CUDA_GRAPH = True" in text
+    assert "ncnn" not in text.lower(), "an AMD-only construct leaked into an NVIDIA script"
+
+
+# -- backend selection ------------------------------------------------------
+def test_a_machine_with_both_vendors_stays_on_tensorrt():
+    """Mixed machines are ordinary, not exotic -- the box this was written on
+    reports an RTX 5070 Ti and a Ryzen iGPU together. TensorRT is the path with
+    measurements behind it, so a tie must not hand a working machine to the
+    untested one."""
+    from fluid_motion.core import gpu
+    from fluid_motion.core.vs_script import BACKEND_NCNN, BACKEND_TRT, resolve_backend
+
+    assert resolve_backend("auto", {gpu.NVIDIA, gpu.AMD}) == BACKEND_TRT
+    assert resolve_backend("auto", {gpu.NVIDIA}) == BACKEND_TRT
+    assert resolve_backend("auto", {gpu.AMD}) == BACKEND_NCNN
+
+
+def test_failed_detection_falls_back_to_what_shipped():
+    """An empty vendor set means the probe failed, not that there is no GPU.
+    Resolving that to ncnn would move a working TensorRT machine onto a path
+    nobody has run, on the strength of a reading that did not arrive."""
+    from fluid_motion.core.vs_script import BACKEND_TRT, resolve_backend
+
+    assert resolve_backend("auto", set()) == BACKEND_TRT
+
+
+def test_the_manual_override_beats_what_is_detected():
+    from fluid_motion.core import gpu
+    from fluid_motion.core.vs_script import BACKEND_NCNN, BACKEND_TRT, resolve_backend
+
+    assert resolve_backend("amd", {gpu.NVIDIA}) == BACKEND_NCNN
+    assert resolve_backend("nvidia", {gpu.AMD}) == BACKEND_TRT
+
+
+def test_the_amd_script_carries_no_tensorrt_only_construct():
+    """engine_folder and the CUDA-graph gate are TensorRT concepts. Translating
+    them would produce a script that either fails to construct the backend or
+    silently ignores settings the UI still shows."""
+    import ast
+
+    from fluid_motion.core.vs_script import BACKEND_NCNN
+
+    text = render_vpy(
+        RifeParams(
+            model=426,
+            mpv_root=r"C:\mpv",
+            engine_folder=r"C:\cache",
+            gpu_name="AMD Radeon RX 7900 XTX",
+            backend=BACKEND_NCNN,
+            trt_streams=4,
+            cuda_graph=True,
+        )
+    )
+    ast.parse(text)
+    assert "Backend.NCNN_VK(" in text
+    assert "engine_folder" not in text, "an engine cache path reached a backend that builds none"
+    assert "CUDA_GRAPH" not in text
+    assert "Backend.TRT" not in text
+    assert "NCNN_STREAMS = 1" in text, "streams must stay at the safe end while untestable"

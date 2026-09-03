@@ -4,7 +4,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fluid_motion.core.vs_script import rife_label, rife_onnx_name
+from fluid_motion.core.gpu import available_vendors
+from fluid_motion.core.vs_script import (
+    BACKEND_NCNN,
+    resolve_backend,
+    rife_label,
+    rife_onnx_name,
+)
 from fluid_motion.paths import default_mpv_root, engine_cache_dir
 
 
@@ -61,8 +67,17 @@ def _exists(path: Path) -> bool:
     return path.is_file()
 
 
-def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
+def diagnose(mpv_root: str | Path | None = None, *, backend: str | None = None) -> RuntimeStatus:
+    """Whether this directory can actually run the filter.
+
+    `backend` is the resolved backend id, not the user's setting. None means
+    "work it out from the hardware", which keeps every existing caller correct;
+    the watcher passes the setting-derived answer so an override is reflected
+    in what the panel demands.
+    """
     root = Path(mpv_root) if mpv_root else default_mpv_root()
+    if backend is None:
+        backend = resolve_backend("auto", available_vendors())
     checks: list[Check] = []
 
     mpv_exe = root / "mpv.exe"
@@ -103,17 +118,35 @@ def diagnose(mpv_root: str | Path | None = None) -> RuntimeStatus:
         Check("vsmlrt", "vs-mlrt", vsmlrt is not None, str(vsmlrt) if vsmlrt else "尚未安裝 vsmlrt.py")
     )
 
-    vstrt = None
-    for name in ("vstrt.dll", "vsmlrt.dll"):
-        candidate = root / "vs-plugins" / name
-        if candidate.is_file():
-            vstrt = candidate
-            break
-    nvinfer = list((root / "vs-plugins").glob("nvinfer*.dll")) if (root / "vs-plugins").is_dir() else []
-    cuda_dir = root / "vs-plugins" / "vsmlrt-cuda"
-    trt_ok = vstrt is not None and (bool(nvinfer) or cuda_dir.is_dir())
-    trt_detail = "TensorRT 插件就緒" if trt_ok else "需要 vstrt.dll 與 TensorRT/CUDA runtime"
-    checks.append(Check("tensorrt", "TensorRT + CUDA", trt_ok, trt_detail))
+    # Which accelerator has to be present depends on the backend that will
+    # actually be generated. Checking for TensorRT on a machine that is going
+    # to emit Backend.NCNN_VK reports a perfectly good AMD tree as broken; the
+    # reverse is worse -- it would call an AMD tree ready with nothing to run
+    # the filter, and mpv would only say "could not init VS".
+    if backend == BACKEND_NCNN:
+        vsncnn = root / "vs-plugins" / "vsncnn.dll"
+        ncnn_ok = vsncnn.is_file()
+        checks.append(
+            Check(
+                "ncnn",
+                "ncnn / Vulkan",
+                ncnn_ok,
+                str(vsncnn) if ncnn_ok else "需要 vsncnn.dll（可自動安裝）與顯示卡驅動的 Vulkan 支援",
+            )
+        )
+        vstrt = vsncnn if ncnn_ok else None
+    else:
+        vstrt = None
+        for name in ("vstrt.dll", "vsmlrt.dll"):
+            candidate = root / "vs-plugins" / name
+            if candidate.is_file():
+                vstrt = candidate
+                break
+        nvinfer = list((root / "vs-plugins").glob("nvinfer*.dll")) if (root / "vs-plugins").is_dir() else []
+        cuda_dir = root / "vs-plugins" / "vsmlrt-cuda"
+        trt_ok = vstrt is not None and (bool(nvinfer) or cuda_dir.is_dir())
+        trt_detail = "TensorRT 插件就緒" if trt_ok else "需要 vstrt.dll 與 TensorRT/CUDA runtime"
+        checks.append(Check("tensorrt", "TensorRT + CUDA", trt_ok, trt_detail))
 
     def _find_onnx(model: int) -> Path | None:
         name = rife_onnx_name(model)

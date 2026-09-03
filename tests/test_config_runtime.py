@@ -318,7 +318,9 @@ def test_rife_425_lite_model_is_rejected():
 
 
 def test_diagnose_missing_tree(tmp_path: Path):
-    status = diagnose(tmp_path)
+    # Backend pinned: with it left to resolve, what this asserts would depend on
+    # the GPUs in whatever machine runs the suite.
+    status = diagnose(tmp_path, backend="trt")
     assert status.ready is False
     ids = {c.id: c.ok for c in status.checks}
     assert ids["mpv"] is False
@@ -340,7 +342,7 @@ def test_diagnose_ready_when_files_present(tmp_path: Path):
     models = plugins / "models" / "rife"
     models.mkdir(parents=True)
     (models / "rife_v4.6.onnx").write_bytes(b"onnx")
-    status = diagnose(tmp_path)
+    status = diagnose(tmp_path, backend="trt")
     assert status.ready is True
     ids = {c.id: c.ok for c in status.checks}
     assert "rife425lite" not in ids
@@ -882,7 +884,7 @@ def _tick_engine(monkeypatch, settings, ipc, pid=4321):
     monkeypatch.setattr(
         watcher_mod, "connect_pid", lambda p, extra=None, **kw: ipc
     )
-    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root, **_kw: engine._runtime)
     monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
     engine._runtime.ready = True
     return engine
@@ -1403,7 +1405,7 @@ def test_diagnose_accepts_an_embedded_python_other_than_312(tmp_path: Path):
     models.mkdir(parents=True)
     (models / "rife_v4.6.onnx").write_bytes(b"onnx")
 
-    status = diagnose(tmp_path)
+    status = diagnose(tmp_path, backend="trt")
     assert status.ready is True
     check = next(c for c in status.checks if c.id == "python")
     assert check.ok is True
@@ -1414,7 +1416,7 @@ def test_diagnose_reports_the_versioned_python_dll_not_the_abi_shim(tmp_path: Pa
     (tmp_path / "python.exe").write_bytes(b"py")
     (tmp_path / "python3.dll").write_bytes(b"dll")
     (tmp_path / "python312.dll").write_bytes(b"dll")
-    check = next(c for c in diagnose(tmp_path).checks if c.id == "python")
+    check = next(c for c in diagnose(tmp_path, backend="trt").checks if c.id == "python")
     assert "python312.dll" in check.detail
 
 
@@ -1544,7 +1546,7 @@ def test_tick_refuses_ambiguous_pipes_once_a_second_player_appears(monkeypatch):
     engine = watcher_mod.Engine(Settings())
     monkeypatch.setattr(watcher_mod, "connect_pid", spy)
     monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
-    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root, **_kw: engine._runtime)
 
     monkeypatch.setattr(
         watcher_mod, "iter_mpv_processes",
@@ -1654,7 +1656,7 @@ def test_not_ready_is_reported_even_with_no_player_connected(monkeypatch):
     engine = watcher_mod.Engine(Settings())
     engine._runtime.ready = False
     monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
-    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root, **_kw: engine._runtime)
     monkeypatch.setattr(watcher_mod, "iter_mpv_processes", lambda: [])
     assert engine._runtime.ready is False
 
@@ -1705,7 +1707,7 @@ def test_a_failed_connect_does_not_forget_a_live_players_hwdec(monkeypatch):
 
     engine = watcher_mod.Engine(Settings())
     monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
-    monkeypatch.setattr(watcher_mod, "diagnose", lambda root: engine._runtime)
+    monkeypatch.setattr(watcher_mod, "diagnose", lambda root, **_kw: engine._runtime)
     monkeypatch.setattr(
         watcher_mod, "iter_mpv_processes",
         lambda: [watcher_mod.PlayerProcess(pid=4321, name="mpv.exe")],

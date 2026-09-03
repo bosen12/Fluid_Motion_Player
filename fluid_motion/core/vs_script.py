@@ -6,6 +6,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from fluid_motion.core import gpu
 from fluid_motion.core.gpu import flicker_risk
 
 
@@ -60,6 +61,18 @@ def rife_modulus(model: int) -> int:
     return 32
 
 
+# Inference backends this can generate. TRT is the only one that has ever run
+# on hardware available to this project; NCNN is Vulkan-based and therefore the
+# cross-vendor one -- see the warning in render_vpy.
+BACKEND_TRT = "trt"
+BACKEND_NCNN = "ncnn"
+
+# What the user-facing setting may hold. "auto" resolves against the adapters
+# actually present; the other two override a machine where that answer is
+# wrong.
+BACKEND_SETTINGS = ("auto", "nvidia", "amd")
+
+
 @dataclass
 class RifeParams:
     model: int = RIFE_426
@@ -73,6 +86,10 @@ class RifeParams:
     cache_size_mb: int = 8192
     gpu_name: str = ""
     force_accel: bool = False
+    # Already resolved by the caller (see resolve_backend); this dataclass stays
+    # pure so the script it renders is a function of its fields alone. Defaults
+    # to TRT so every existing construction keeps rendering what it did.
+    backend: str = BACKEND_TRT
 
 
 def parse_fps(value: Any) -> Fraction | None:
@@ -154,6 +171,29 @@ def effective_backend(
     return streams, graph, safe_mode
 
 
+def resolve_backend(setting: str, vendors: set[str] | frozenset[str]) -> str:
+    """Which backend to generate, given the setting and the adapters present.
+
+    NVIDIA wins a tie on purpose. Mixed machines are ordinary -- a laptop or a
+    Ryzen desktop reports its iGPU alongside the discrete card -- and TensorRT
+    is the path with real measurements behind it, so a dual-vendor box keeps
+    doing exactly what it does today.
+
+    An empty `vendors` means detection failed, not that there is no GPU. That
+    also resolves to TensorRT: it is what shipped, so a failed probe cannot
+    move a working machine onto an untested path.
+    """
+    if setting == "nvidia":
+        return BACKEND_TRT
+    if setting == "amd":
+        return BACKEND_NCNN
+    if gpu.NVIDIA in vendors:
+        return BACKEND_TRT
+    if gpu.AMD in vendors:
+        return BACKEND_NCNN
+    return BACKEND_TRT
+
+
 def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_fps: float | None = None) -> str:
     multi, _video_player = target_multi(params.profile, source_fps, display_fps)
     engine = Path(params.engine_folder).as_posix() if params.engine_folder else ""
@@ -182,7 +222,47 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
     else:
         mode_note = "accelerated mode"
 
-    return f'''# Fluid Motion — RIFE TensorRT (generated, do not edit)
+    if params.backend == BACKEND_NCNN:
+        # ncnn over Vulkan: the cross-vendor path, used for AMD. Everything
+        # TensorRT-specific is deliberately absent rather than translated --
+        # engine_folder has no meaning without an ahead-of-time engine build,
+        # and the CUDA-graph flicker gate above is about a CUDA feature ncnn
+        # does not have, so neither belongs here.
+        #
+        # num_streams is pinned to 1 instead of following trt_streams: it is a
+        # real tuning knob, but tuning it needs a measurement nobody with this
+        # code has been able to take, and one stream is the safe end of it.
+        backend_label = "ncnn / Vulkan"
+        mode_note = "cross-vendor backend — untested on AMD hardware"
+        accel_consts = (
+            f"NCNN_FP16 = {bool(params.fp16)}\n"
+            f"NCNN_STREAMS = 1"
+        )
+        backend_block = """    backend=Backend.NCNN_VK(
+        fp16=NCNN_FP16,
+        num_streams=NCNN_STREAMS,
+        output_format=1,
+    ),"""
+    else:
+        backend_label = "TensorRT"
+        accel_consts = (
+            f"TRT_FP16 = {bool(params.fp16)}\n"
+            f"TRT_STREAMS = {int(streams)}\n"
+            f"TRT_CUDA_GRAPH = {bool(cuda_graph)}"
+        )
+        backend_block = f"""    backend=Backend.TRT(
+        fp16=TRT_FP16,
+        force_fp16=True,
+        tf32=True,
+        use_cuda_graph=TRT_CUDA_GRAPH,
+        static_shape=True,
+        num_streams=TRT_STREAMS,
+        use_jit_convolutions=False,
+        tiling_optimization_level=0,
+        output_format=1{engine_arg},
+    ),"""
+
+    return f'''# Fluid Motion — RIFE {backend_label} (generated, do not edit)
 # GPU: {gpu_note} — {mode_note}
 import os
 import sys
@@ -209,9 +289,7 @@ SC_THRESHOLD = {float(params.scene_threshold):.4f}
 RIFE_MODEL = {int(params.model)}
 RIFE_ONNX = "{rife_onnx_name(params.model)}"
 RIFE_FORMAT = vs.RGBH
-TRT_FP16 = {bool(params.fp16)}
-TRT_STREAMS = {int(streams)}
-TRT_CUDA_GRAPH = {bool(cuda_graph)}
+{accel_consts}
 MOD = {rife_modulus(params.model)}
 MULTI = {_py_multi(multi)}
 
@@ -262,17 +340,7 @@ clip = RIFE(
     multi=MULTI,
     model=RIFE_MODEL,
     _implementation=impl,
-    backend=Backend.TRT(
-        fp16=TRT_FP16,
-        force_fp16=True,
-        tf32=True,
-        use_cuda_graph=TRT_CUDA_GRAPH,
-        static_shape=True,
-        num_streams=TRT_STREAMS,
-        use_jit_convolutions=False,
-        tiling_optimization_level=0,
-        output_format=1{engine_arg},
-    ),
+{backend_block}
 )
 
 if pad_w or pad_h:

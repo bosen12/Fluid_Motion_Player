@@ -7,7 +7,9 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
+from fluid_motion.core.gpu import available_vendors
 from fluid_motion.core.proc import run_hidden
+from fluid_motion.core.vs_script import BACKEND_NCNN, resolve_backend
 from fluid_motion.paths import download_dir, resources_dir
 
 VSMLRT_TAG = "v15.16"
@@ -205,20 +207,37 @@ def _extract(archive: Path, out_dir: Path, seven: Path, extra_args: list[str] | 
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "7z 解壓縮失敗")
 
 
-def install_runtime(mpv_root: Path, cb: Progress | None = None) -> None:
-    """Download VapourSynth (if absent) + vs-mlrt TensorRT + RIFE into the mpv tree."""
-    mpv_root = Path(mpv_root)
+def _install_accelerator(
+    backend: str,
+    mpv_root: Path,
+    vs_plugins: Path,
+    cache: Path,
+    seven: Path,
+    cb: Progress | None,
+) -> None:
+    """Land the inference plugin the chosen backend needs, and nothing else.
 
-    # First, because everything below is a VapourSynth plugin or a script for
-    # it -- installing TensorRT into an mpv that cannot load .vpy at all just
-    # produces a 2.6 GB download and a filter that never applies.
-    install_vapoursynth(mpv_root, _scaled(cb, 0.0, 0.18))
-    cb = _scaled(cb, 0.18, 1.0)
-
-    vs_plugins = mpv_root / "vs-plugins"
-    vs_plugins.mkdir(parents=True, exist_ok=True)
-    cache = download_dir()
-    seven = _sevenzr(cache)
+    The two are not the same shape of job. TensorRT is a 2.6 GB two-part
+    archive carrying its own CUDA runtime; the ncnn build is a single 2.7 MB
+    archive holding exactly one file, vsncnn.dll, because it talks to Vulkan
+    through the display driver the machine already has. Verified against the
+    v15.16 release listing rather than assumed.
+    """
+    if backend == BACKEND_NCNN:
+        _progress(cb, "準備 ncnn / Vulkan 執行環境…", 0.02)
+        arc = cache / f"VSNCNN-Windows-x64.{VSMLRT_TAG}.7z"
+        _download(
+            f"{GITHUB_VSMLRT}/VSNCNN-Windows-x64.{VSMLRT_TAG}.7z",
+            arc,
+            cb,
+            "ncnn / Vulkan runtime",
+            (0.02, 0.50),
+        )
+        _progress(cb, "解壓 ncnn 外掛…", 0.52)
+        _extract(arc, vs_plugins, seven)
+        # No vsmlrt.py in this archive -- it holds the plugin alone. The
+        # scripts.7z step below is what provides it for both backends.
+        return
 
     _progress(cb, "準備 TensorRT 執行環境…", 0.02)
     part1 = cache / f"vsmlrt-windows-x64-tensorrt.{VSMLRT_TAG}.7z.001"
@@ -244,6 +263,33 @@ def install_runtime(mpv_root: Path, cb: Progress | None = None) -> None:
     vsmlrt_src = vs_plugins / "vsmlrt.py"
     if vsmlrt_src.is_file():
         shutil.copy2(vsmlrt_src, mpv_root / "vsmlrt.py")
+
+
+def install_runtime(
+    mpv_root: Path, cb: Progress | None = None, *, backend: str | None = None
+) -> None:
+    """Download VapourSynth (if absent) + the inference runtime + RIFE models.
+
+    `backend` is the resolved backend id. None means "work it out from the
+    hardware", so an AMD-only machine installs the ncnn plugin rather than
+    downloading 2.6 GB of CUDA it can never load.
+    """
+    mpv_root = Path(mpv_root)
+    if backend is None:
+        backend = resolve_backend("auto", available_vendors())
+
+    # First, because everything below is a VapourSynth plugin or a script for
+    # it -- installing TensorRT into an mpv that cannot load .vpy at all just
+    # produces a 2.6 GB download and a filter that never applies.
+    install_vapoursynth(mpv_root, _scaled(cb, 0.0, 0.18))
+    cb = _scaled(cb, 0.18, 1.0)
+
+    vs_plugins = mpv_root / "vs-plugins"
+    vs_plugins.mkdir(parents=True, exist_ok=True)
+    cache = download_dir()
+    seven = _sevenzr(cache)
+
+    _install_accelerator(backend, mpv_root, vs_plugins, cache, seven, cb)
 
     # Without this every .vpy fails at load on misc.SCDetect, so the runtime
     # is not usable even with TensorRT and the models all in place -- which is

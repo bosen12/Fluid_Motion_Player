@@ -71,7 +71,7 @@ def engine_with_player(monkeypatch, tmp_path):
         monkeypatch.setattr(
             watcher_mod,
             "diagnose",
-            lambda root: _status(Path(root), ready=(Path(root) != PLAYER_ROOT or player_ready)),
+            lambda root, **_kw: _status(Path(root), ready=(Path(root) != PLAYER_ROOT or player_ready)),
         )
         monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
         monkeypatch.setattr(watcher_mod, "install_lua", lambda root: root)

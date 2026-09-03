@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fluid_motion.core.vs_script import BACKEND_SETTINGS
 from fluid_motion.paths import config_path, default_mpv_root
 
 
@@ -35,6 +36,11 @@ class Settings:
     mpv_root: str = field(default_factory=lambda: str(default_mpv_root()))
     rife_model: int = 426  # vsmlrt RIFEModel.v4_26 — 4.6 paints a waffle grid
     force_accel: bool = False  # user override: skip the RTX 50 flicker-safe gate
+    # "auto" | "nvidia" | "amd" -- see vs_script.resolve_backend. Auto resolves
+    # NVIDIA first, so a dual-vendor machine (an iGPU beside a discrete card is
+    # the common case, not an exotic one) keeps the TensorRT path it has always
+    # used. The override exists for the machine where that answer is wrong.
+    backend: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -55,6 +61,11 @@ class Settings:
             settings.rife_model = 426
         if settings.rife_model not in RIFE_MODELS:
             settings.rife_model = 426
+        # Anything unrecognised (a hand-edited config, a value from a future
+        # version) becomes "auto" rather than being trusted: the alternative is
+        # a typo silently pinning a machine to a backend its GPU cannot run.
+        if settings.backend not in BACKEND_SETTINGS:
+            settings.backend = "auto"
         settings.scene_threshold = min(0.30, max(0.02, float(settings.scene_threshold)))
         # Pinned, not clamped. Every extra TensorRT stream builds its own
         # execution context when the VapourSynth script loads, and mpv reloads
