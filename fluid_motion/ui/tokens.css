@@ -10,7 +10,13 @@
   --color-paper-3: oklch(21.4% 0.024 50);
   --color-ink: oklch(93% 0.016 78);
   --color-muted: oklch(70% 0.028 70);
-  --color-faint: oklch(52% 0.03 60);
+  /* 62%, not the 52% this was: measured 3.18:1 on --color-paper-3, under the
+     4.5:1 WCAG AA wants below 18.7px -- and this token paints .fps-block dt
+     and .player-dir at --text-xs (0.64rem, about 10px). 62% measures 4.81:1
+     on that same worst ground. 60% reaches only 4.44 there, which is the
+     value that looks close enough and is still short; AX Player's palette
+     note records rejecting the same near-miss. */
+  --color-faint: oklch(62% 0.03 60);
   --color-accent: oklch(79% 0.14 72);
   --color-accent-dim: oklch(79% 0.14 72 / 0.16);
   --color-focus: oklch(79% 0.14 72);
