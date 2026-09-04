@@ -807,10 +807,11 @@ def apply(
 
 
 def remove(ipc: MpvIpc, *, announce: bool = False, pid: int | None = None) -> None:
+    refused = False
     try:
         ipc.command("vf", "remove", FILTER_LABEL)
     except IpcError:
-        pass
+        refused = True
     try:
         vf = ipc.get("vf")
     except IpcError:
@@ -826,7 +827,31 @@ def remove(ipc: MpvIpc, *, announce: bool = False, pid: int | None = None) -> No
         try:
             ipc.command("vf", "remove", f"@{label}" if label else "vapoursynth")
         except IpcError:
+            refused = True
             continue
+    # A refused vf command is not proof the filter is still there -- mpv also
+    # errors when the label is already gone, which is the ordinary case for a
+    # second remove. So this only reports a leftover it can actually see.
+    #
+    # It matters twice over. Everything below assumes the graph is clear:
+    # restore_hwdec takes the player off copy-back, and the filter needs
+    # copy-back frames. And _remove_from carries a full error path -- log, set
+    # _error, return False so the tick retries -- that nothing could reach,
+    # because every command in here swallowed its own IpcError. Measured
+    # against an mpv refusing every vf command: both removes rejected, the
+    # filter still on the graph, and _remove_from returned True with _error
+    # empty.
+    #
+    # An unreadable vf is not an observation either -- snapshot_playback's
+    # vf_ok makes the same distinction. Falling through there keeps the
+    # behaviour this has always had for an mpv that answers nothing at all.
+    if refused:
+        try:
+            leftover = ipc.get("vf")
+        except IpcError:
+            leftover = None
+        if leftover is not None and vf_is_fluid(leftover):
+            raise IpcError("送出移除之後,補幀濾鏡仍掛在 mpv 的 vf 上")
     # The filter is gone, so copy-back's GPU->CPU transfer is pure cost now.
     restore_hwdec(ipc, pid)
     if announce:
