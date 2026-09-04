@@ -25,3 +25,18 @@ def isolated_appdata(tmp_path, monkeypatch):
     from fluid_motion import log as log_mod
 
     monkeypatch.setattr(log_mod, "_log_path", None)
+
+    # Same shape, one module over. gpu caches the adapter list and the vendor
+    # set for the life of the process, on the stated grounds that neither can
+    # change while the machine is on -- true of a running app, false of a test
+    # session, where each test patches in a different machine. Whichever test
+    # asked first would otherwise decide the answer for every one after it.
+    #
+    # _ADAPTERS has been in that state all along and nothing caught it: every
+    # test that cares patches detect_adapters itself, which is above the cache.
+    # That is luck rather than isolation, and it expires the first time a test
+    # exercises the real function.
+    from fluid_motion.core import gpu as gpu_mod
+
+    monkeypatch.setattr(gpu_mod, "_ADAPTERS", None)
+    monkeypatch.setattr(gpu_mod, "_VENDORS", None)

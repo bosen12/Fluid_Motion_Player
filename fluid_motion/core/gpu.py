@@ -33,6 +33,7 @@ _VENDOR_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _ADAPTER_CLASS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 _ADAPTERS: list[str] | None = None
+_VENDORS: set[str] | None = None
 
 
 def vendor_of(name: str) -> str:
@@ -113,11 +114,31 @@ def available_vendors(*, refresh: bool = False) -> set[str]:
     nvidia-smi answering is proof of an NVIDIA GPU even when the registry read
     came back empty, which keeps a machine that today works on TensorRT working
     if the registry walk ever fails.
+
+    Cached for the process, on the grounds detect_adapters() already states for
+    its own cache: which vendors are in the machine cannot change while the
+    machine is on. Without it every caller paid for snapshot(), whose 1.5s TTL
+    a 900ms poll misses every other time -- 46.7ms per nvidia-smi spawn,
+    measured, so 1.6 seconds of subprocess a minute for as long as the app was
+    running. watcher's HOUSEKEEPING constants exist to stop exactly that
+    ("spawning nvidia-smi every 1.5s, forever"), and Engine._backend() undid it
+    by asking here from state(), which the UI polls every 900ms whether the
+    window is visible or not.
+
+    Holding the answer makes the failure mode safer rather than riskier.
+    resolve_backend() already refuses to move a working machine off TensorRT
+    when detection returns *nothing* -- but a box with an iGPU beside the
+    NVIDIA card still resolves to ncnn if nvidia-smi merely blinks, a driver
+    reset or a TDR under load. Deciding once closes that window.
     """
+    global _VENDORS
+    if _VENDORS is not None and not refresh:
+        return set(_VENDORS)
     vendors = {vendor_of(name) for name in detect_adapters(refresh=refresh)}
     vendors.discard(UNKNOWN)
     if snapshot().available:
         vendors.add(NVIDIA)
+    _VENDORS = set(vendors)
     return vendors
 
 

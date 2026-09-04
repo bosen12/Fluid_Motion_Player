@@ -480,3 +480,81 @@ def test_the_gpu_panel_does_not_deny_a_gpu_it_can_name():
     # The safe/accelerated badge is the RTX 50 CUDA-graph gate; ncnn has no
     # CUDA graphs, so reporting on it there would describe a feature not in play.
     assert 'state.backend === "ncnn"' in js
+
+
+def test_the_ui_poll_does_not_respawn_nvidia_smi(monkeypatch):
+    """state() runs every 900ms for as long as the app is running -- app.js
+    polls unconditionally, tray or not -- and it asks _backend() every time.
+
+    _backend() calls available_vendors(), which called gpu.snapshot(), which
+    shells out to nvidia-smi behind a 1.5s TTL. A 900ms caller misses that TTL
+    every other call: measured at 46.7ms a spawn, 1.6 seconds of subprocess per
+    minute, forever.
+
+    watcher's HOUSEKEEPING_ACTIVE/IDLE constants exist to stop exactly this --
+    their comment says "spawning nvidia-smi every 1.5s (its own cache TTL),
+    forever" -- and _backend() reintroduced it one layer up, through a path
+    those constants do not gate.
+
+    The clock has to move. The first version of this test called _backend() in
+    a tight loop and asserted on the spawn count: it passed with the cache
+    removed, because sixty iterations take microseconds and snapshot()'s own
+    TTL covered every one of them. It was measuring nothing. Advancing a fake
+    clock by the real poll interval is what makes the TTL expire the way it
+    does in the app.
+
+    Counted at _run_smi rather than at available_vendors, because that is where
+    the process is actually created; a cache that merely moved the call would
+    still pass a check on the wrapper.
+    """
+    import types
+
+    from fluid_motion.config import Settings
+    from fluid_motion.core import gpu
+    from fluid_motion.core import watcher as watcher_mod
+
+    clock = [0.0]
+    monkeypatch.setattr(gpu, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    spawns = []
+    monkeypatch.setattr(gpu, "_run_smi", lambda args: spawns.append(args) or "")
+    monkeypatch.setattr(gpu, "_CACHE", None)
+    monkeypatch.setattr(gpu, "detect_adapters", lambda **_kw: ["NVIDIA GeForce RTX 5070 Ti"])
+
+    engine = watcher_mod.Engine(Settings(mpv_root="Z:/cfg"))
+    baseline = len(spawns)
+
+    for _ in range(60):
+        clock[0] += 0.9  # the UI's poll interval
+        engine._backend()
+
+    assert len(spawns) == baseline, (
+        f"{len(spawns) - baseline} nvidia-smi spawns across 54 seconds of "
+        "polling. At 46.7ms each that is subprocess churn for the whole life "
+        "of the app, on a path HOUSEKEEPING_IDLE cannot gate."
+    )
+
+
+def test_a_forced_refresh_still_reaches_the_hardware(monkeypatch):
+    """The cache above must not make the answer permanent. available_vendors
+    keeps its refresh flag precisely so a caller that knows something changed
+    can get past it -- without this, the mutation that drops `not refresh`
+    from the guard survives, and the flag becomes a lie the signature tells."""
+    import types
+
+    from fluid_motion.core import gpu
+
+    clock = [0.0]
+    monkeypatch.setattr(gpu, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(gpu, "_CACHE", None)
+    # No nvidia-smi: this machine's real one answers, and it would add NVIDIA
+    # to every set below regardless of what detect_adapters is told to say.
+    monkeypatch.setattr(gpu, "_run_smi", lambda args: "")
+    monkeypatch.setattr(gpu, "detect_adapters", lambda **_kw: ["AMD Radeon"])
+
+    assert gpu.available_vendors() == {gpu.AMD}
+
+    monkeypatch.setattr(gpu, "detect_adapters", lambda **_kw: ["NVIDIA GeForce RTX 5070 Ti"])
+    assert gpu.available_vendors() == {gpu.AMD}, "the cache is not holding"
+    assert gpu.available_vendors(refresh=True) == {gpu.NVIDIA}, (
+        "refresh=True did not reach past the cache"
+    )
