@@ -73,7 +73,7 @@ def test_apply_applies_when_target_rounds_to_a_real_multiplier(tmp_path: Path, m
     from fluid_motion.core.inject import apply
 
     monkeypatch.setenv("APPDATA", str(tmp_path))
-    ipc = _FakeIpc({"container-fps": 50, "estimated-vfps": 50, "vsync-ratio": 1})
+    ipc = _FakeIpc({"container-fps": 50, "estimated-vf-fps": 50, "vsync-ratio": 1})
     settings = Settings(profile="120", mpv_root=str(tmp_path))
     apply(ipc, settings, tmp_path)
     add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
@@ -87,7 +87,7 @@ def test_apply_does_not_unminimize_or_reset_matching_props(tmp_path: Path, monke
     ipc = _FakeIpc(
         {
             "container-fps": 24,
-            "estimated-vfps": 24,
+            "estimated-vf-fps": 24,
             "interpolation": False,
             "video-sync": "display-resample",
             "hr-seek-framedrop": False,
@@ -107,7 +107,7 @@ def test_apply_skips_when_nearest_integer_multiplier_is_only_one(tmp_path: Path,
     from fluid_motion.core.inject import apply
 
     monkeypatch.setenv("APPDATA", str(tmp_path))
-    ipc = _FakeIpc({"container-fps": 100, "estimated-vfps": 100, "vsync-ratio": 1})
+    ipc = _FakeIpc({"container-fps": 100, "estimated-vf-fps": 100, "vsync-ratio": 1})
     settings = Settings(profile="120", mpv_root=str(tmp_path))
     apply(ipc, settings, tmp_path)
     add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
@@ -118,7 +118,7 @@ def test_apply_skips_only_when_source_already_at_target(tmp_path: Path, monkeypa
     from fluid_motion.core.inject import apply
 
     monkeypatch.setenv("APPDATA", str(tmp_path))
-    ipc = _FakeIpc({"container-fps": 120, "estimated-vfps": 120, "vsync-ratio": 1})
+    ipc = _FakeIpc({"container-fps": 120, "estimated-vf-fps": 120, "vsync-ratio": 1})
     settings = Settings(profile="120", mpv_root=str(tmp_path))
     apply(ipc, settings, tmp_path)
     add_calls = [c for c in ipc.commands if c[0] == "vf" and c[1] == "add"]
@@ -214,7 +214,7 @@ def test_ui_thread_settings_change_does_not_block_on_a_slow_apply(tmp_path, monk
 
     from fluid_motion.core import watcher as watcher_mod
 
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
     with engine._lock:
@@ -914,7 +914,7 @@ def test_settings_change_skipped_by_seek_hold_is_reapplied_by_the_next_tick(monk
     is the applied-settings snapshot -- not player.interpolation -- that has to
     carry the "still owed an apply" state across the hold.
     """
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
     seen = _applied_profiles(monkeypatch, engine)
@@ -943,7 +943,7 @@ def test_new_file_with_a_different_source_fps_reapplies_the_right_multiplier(mon
     new file kept playing through the old file's multiplier with nothing left
     to notice, which is the same shape of desync a skipped apply leaves behind.
     """
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
     seen = _applied_profiles(monkeypatch, engine)
@@ -954,7 +954,7 @@ def test_new_file_with_a_different_source_fps_reapplies_the_right_multiplier(mon
 
     # Next file in the playlist is 59.94, and the fluid vf is still loaded.
     ipc.props["container-fps"] = 59.94
-    ipc.props["estimated-vfps"] = 59.94
+    ipc.props["estimated-vf-fps"] = 59.94
     assert ipc.vf, "mpv keeps the filter across the file change"
 
     engine.tick()
@@ -963,7 +963,7 @@ def test_new_file_with_a_different_source_fps_reapplies_the_right_multiplier(mon
 
 
 def test_settled_settings_are_not_reapplied_every_tick(monkeypatch, tmp_path):
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
     seen = _applied_profiles(monkeypatch, engine)
@@ -982,7 +982,7 @@ def test_no_op_multiplier_does_not_reapply_forever(monkeypatch, tmp_path):
     """
     from fluid_motion.core import watcher as watcher_mod
 
-    ipc = _FakeIpc({"container-fps": 120, "estimated-vfps": 120})
+    ipc = _FakeIpc({"container-fps": 120, "estimated-vf-fps": 120})
     settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
     calls: list[str] = []
@@ -999,7 +999,7 @@ def test_no_op_multiplier_does_not_reapply_forever(monkeypatch, tmp_path):
 
 def test_rapid_setting_changes_converge_on_the_last_one(monkeypatch, tmp_path):
     """Clicking through several profiles quickly must end on the last click."""
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
     seen = _applied_profiles(monkeypatch, engine)
@@ -1023,7 +1023,7 @@ def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
     from fluid_motion.core import watcher as watcher_mod
     from fluid_motion.core.mpv_ipc import IpcError
 
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="120", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
@@ -1056,7 +1056,7 @@ def test_pipe_closing_apply_is_not_surfaced_as_error(monkeypatch, tmp_path):
     from fluid_motion.core import watcher as watcher_mod
     from fluid_motion.core.mpv_ipc import IpcError
 
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
@@ -1074,7 +1074,7 @@ def test_error_clears_when_last_player_leaves(monkeypatch, tmp_path):
     from fluid_motion.core import watcher as watcher_mod
     from fluid_motion.core.mpv_ipc import IpcError
 
-    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
     engine = _tick_engine(monkeypatch, settings, ipc)
 
@@ -1301,7 +1301,7 @@ def test_apply_fails_loudly_when_the_filter_does_not_land(tmp_path, monkeypatch)
         def command(self, *args, **kwargs):
             self.commands.append(args)  # accepts "vf add" but never loads it
 
-    ipc = SilentlyIgnoresAdd({"container-fps": 23.976, "estimated-vfps": 23.976})
+    ipc = SilentlyIgnoresAdd({"container-fps": 23.976, "estimated-vf-fps": 23.976})
     settings = Settings(profile="120", mpv_root=str(tmp_path))
     try:
         apply(ipc, settings, tmp_path)
