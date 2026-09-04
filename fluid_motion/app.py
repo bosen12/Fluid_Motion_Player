@@ -6,8 +6,10 @@ import sys
 import threading
 
 from fluid_motion.config import load_settings
+from fluid_motion.core.proc import terminate_children
 from fluid_motion.core.watcher import Engine
 from fluid_motion.icon import ensure_icon
+from fluid_motion.log import log
 from fluid_motion.paths import ui_dir
 from fluid_motion.single import handover_or_continue
 
@@ -64,6 +66,20 @@ def main(argv: list[str] | None = None) -> int:
                 window.destroy()
             except Exception:
                 pass
+        # engine.stop() reaches the tick thread and the IPC connections. It
+        # does not reach the bootstrap thread, which is a daemon blocked inside
+        # run_hidden waiting on 7z -- and os._exit below joins nothing. On
+        # Windows that child then outlives the app: reproduced on this code
+        # path, parent gone, extraction still running. Worse than the wasted
+        # work, install_runtime's "one at a time" guard is a per-process flag,
+        # so the next launch starts a second extraction into the directory the
+        # orphan is still writing.
+        try:
+            killed = terminate_children()
+            if killed:
+                log(f"quit: killed {killed} child process(es) still running")
+        except Exception:  # noqa: BLE001 — quitting must not be blockable
+            pass
         # pywebview + pystray otherwise leave a headless process (no tray icon).
         os._exit(0)
 
