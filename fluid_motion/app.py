@@ -9,7 +9,7 @@ from fluid_motion.config import load_settings
 from fluid_motion.core.proc import terminate_children
 from fluid_motion.core.watcher import Engine
 from fluid_motion.icon import ensure_icon
-from fluid_motion.log import log
+from fluid_motion.log import log, log_exc
 from fluid_motion.paths import ui_dir
 from fluid_motion.single import handover_or_continue
 
@@ -74,12 +74,19 @@ def main(argv: list[str] | None = None) -> int:
         # work, install_runtime's "one at a time" guard is a per-process flag,
         # so the next launch starts a second extraction into the directory the
         # orphan is still writing.
+        # log_exc rather than pass. A mutation sweep deleted the import above
+        # and every test stayed green: quit_app then raises NameError, which is
+        # an Exception, which this handler swallowed -- leaving exactly the
+        # orphan this block exists to prevent, and leaving it silently. The
+        # handler still cannot be allowed to block the quit, so it stays broad;
+        # what changes is that a broken reap says so. log_exc swallows its own
+        # OSError, so this cannot fail on a full disk either.
         try:
             killed = terminate_children()
             if killed:
                 log(f"quit: killed {killed} child process(es) still running")
         except Exception:  # noqa: BLE001 — quitting must not be blockable
-            pass
+            log_exc("quit: reaping children")
         # pywebview + pystray otherwise leave a headless process (no tray icon).
         os._exit(0)
 

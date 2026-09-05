@@ -150,7 +150,10 @@ def test_quit_app_reaps_before_it_calls_os_exit():
         if name == "terminate_children":
             reap_at = node.lineno
         elif name == "_exit":
-            exit_at = node.lineno
+            # The *first* one. Anything after it is unreachable, and taking the
+            # last let a mutation that inserted an os._exit ahead of the reap
+            # go through: reap_at was still below the later exit's line.
+            exit_at = node.lineno if exit_at is None else min(exit_at, node.lineno)
 
     assert exit_at is not None, "quit_app no longer ends in os._exit"
     assert reap_at is not None, (
@@ -158,3 +161,71 @@ def test_quit_app_reaps_before_it_calls_os_exit():
         "7z left running by the bootstrap thread outlives the app"
     )
     assert reap_at < exit_at, "the reap is after os._exit, which never returns"
+
+
+def test_the_names_quit_app_reaps_with_are_actually_bound():
+    """The AST check above sees a *call*; it cannot see whether the name
+    resolves.
+
+    A mutation sweep deleted `from fluid_motion.core.proc import
+    terminate_children` and the whole suite stayed green. At runtime that is a
+    NameError inside quit_app -- an Exception, caught by the handler that
+    exists so quitting can never be blocked -- so the reap silently does
+    nothing and the orphan comes back exactly as before.
+
+    Binding is checked here, and the handler now logs rather than passing, so
+    the same class of breakage leaves a trace instead of a silence.
+    """
+    import fluid_motion.app as app_mod
+    from fluid_motion.core import proc as proc_mod
+    from fluid_motion import log as log_mod
+
+    assert getattr(app_mod, "terminate_children", None) is proc_mod.terminate_children, (
+        "quit_app's terminate_children does not resolve to the real one"
+    )
+    assert getattr(app_mod, "log_exc", None) is log_mod.log_exc, (
+        "the reap's failure path cannot report anything"
+    )
+
+
+def test_the_reaps_failure_path_does_not_swallow_in_silence():
+    """The handler is broad on purpose -- quitting must never be blockable --
+    which is exactly why it must not be a bare `pass`.
+
+    A mutation sweep deleted the terminate_children import and the suite
+    stayed green. At runtime that is a NameError inside quit_app, an Exception,
+    caught here and dropped: the reap silently does nothing and the orphan is
+    back with no trace anywhere.
+
+    Checked in the source, like the ordering above, because quit_app cannot be
+    called. The first attempt at this test rebuilt the try/except in the test
+    body and asserted over its own log call -- it passed with the handler
+    reverted to `pass`, which is the tautology CLAUDE.md's contact-sheet
+    example warns about, so it was deleted rather than kept.
+    """
+    import ast
+    from pathlib import Path
+
+    import fluid_motion.app as app_mod
+
+    tree = ast.parse(Path(app_mod.__file__).read_text(encoding="utf-8"))
+    quit_fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "quit_app"
+    )
+    guarded = [
+        node for node in ast.walk(quit_fn)
+        if isinstance(node, ast.Try)
+        and any(
+            isinstance(call, ast.Call)
+            and getattr(call.func, "id", getattr(call.func, "attr", "")) == "terminate_children"
+            for call in ast.walk(node)
+        )
+    ]
+    assert len(guarded) == 1, f"expected one guarded reap, found {len(guarded)}"
+
+    for handler in guarded[0].handlers:
+        assert not all(isinstance(stmt, ast.Pass) for stmt in handler.body), (
+            "the reap's failure path is a bare pass: a NameError there looks "
+            "exactly like a successful reap that had nothing to kill"
+        )
