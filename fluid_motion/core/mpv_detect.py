@@ -168,7 +168,17 @@ def _embedded_player_pids(seen: set[int]) -> set[int]:
             pid_str = raw.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
         else:
             continue
-        if pid_str.isdigit():
+        # isdecimal(), not isdigit(): the two disagree on 128 characters --
+        # ①②③, ⑴⑵⑶, superscripts -- which are Numeric_Type=Digit, so
+        # isdigit() says yes, but which int() rejects outright. This loop
+        # reads the machine's *entire* named pipe namespace and keeps
+        # whatever matches by name, so the string being converted here is not
+        # the app's. A ValueError would leave iter_mpv_processes, and every
+        # tick after it would fail the same way for as long as that pipe
+        # existed -- interpolation stopped over a name it merely walked past.
+        # There is no plausible trigger; what decides it is that the input is
+        # not ours to vouch for.
+        if pid_str.isdecimal():
             pid = int(pid_str)
             if pid not in seen:
                 pids.add(pid)

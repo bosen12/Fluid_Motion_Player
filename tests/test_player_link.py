@@ -459,3 +459,27 @@ def test_a_pipe_naming_a_live_process_is_still_a_player(monkeypatch):
     found = mpv_detect.iter_mpv_processes()
 
     assert [p.pid for p in found] == [os.getpid()]
+
+
+def test_a_foreign_pipe_name_cannot_stop_player_discovery(monkeypatch):
+    """_embedded_player_pids walks the machine's whole pipe namespace.
+
+    It keeps whatever matches by name, so the segment it converts to a pid is
+    not the app's string. str.isdigit() is true for 128 characters int()
+    rejects -- ①②③, ⑴⑵⑶, superscripts -- and a ValueError here leaves
+    iter_mpv_processes entirely: every tick would fail the same way for as
+    long as that pipe existed, so interpolation would stop over a name the
+    scan merely walked past.
+    """
+    import os
+
+    from fluid_motion.core import mpv_detect
+
+    real = f"fluid-mpv-{os.getpid()}"
+    monkeypatch.setattr(
+        mpv_detect, "list_win_pipes", lambda: [r"mpvSockets\①", "fluid-mpv-②", real]
+    )
+
+    pids = mpv_detect._embedded_player_pids(set())
+
+    assert pids == {os.getpid()}, "the real player must still be found beside them"
