@@ -9,6 +9,11 @@ rem bundle. Failing loudly when 3.14 is absent is the point.
 cd /d "%~dp0"
 py -3.14 -m pip install -r requirements.txt pyinstaller -q
 if errorlevel 1 goto :failed
+rem PyInstaller follows PATH while resolving DLL dependencies. Do not let the
+rem launching toolchain become part of the release: a Codex shell once added
+rem Poppler/libheif's ICU files to an unrelated build. py.exe is in SystemRoot;
+rem Python and site-packages are discovered from the running interpreter.
+set "PATH=%SystemRoot%\system32;%SystemRoot%"
 py -3.14 -m PyInstaller --noconfirm --clean FluidMotion.spec
 if errorlevel 1 goto :failed
 if not exist dist\FluidMotion.exe goto :failed

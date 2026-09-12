@@ -48,7 +48,9 @@ environment; CI runs 3.10 on `windows-latest`.
 
 `build.bat` requires `py -3.14` explicitly and never falls back to an
 unversioned interpreter. Releases use 3.14, and the artifact size differs
-noticeably on 3.10. Note also that `requirements.txt` is entirely unpinned and
+noticeably on 3.10. Its PyInstaller phase also replaces `PATH` with Windows
+system directories so unrelated developer-tool DLLs cannot leak into the
+bundle. Note also that `requirements.txt` is entirely unpinned and
 `build.bat` reinstalls at build time, so two builds of the same commit are not
 guaranteed to match.
 

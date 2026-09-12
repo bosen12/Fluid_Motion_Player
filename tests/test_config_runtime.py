@@ -1331,6 +1331,12 @@ def test_build_uses_only_the_release_python_314_interpreter():
     assert not any(re.search(r"(?<![\w.-])py\s+-3(?:\s|$)", line) for line in commands)
 
 
+def test_build_does_not_let_the_callers_path_supply_release_dlls():
+    bat = (Path(__file__).resolve().parent.parent / "build.bat").read_text(encoding="utf-8")
+    assert 'set "PATH=%SystemRoot%\\system32;%SystemRoot%"' in bat
+    assert 'set "PATH=%SystemRoot%\\system32;%SystemRoot%;%PATH%"' not in bat
+
+
 def test_named_pipe_reads_peek_before_blocking():
     """ReadFile on a synchronous pipe blocks until bytes arrive.
 
