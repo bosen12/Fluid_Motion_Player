@@ -57,6 +57,17 @@ def test_every_shipped_backend_is_named_on_the_public_surfaces(surface):
         )
 
 
+def test_quickstart_and_site_intro_do_not_describe_a_tensorrt_only_product():
+    readme = _read("README.md")
+    site = _read("docs/index.html")
+
+    assert "Install TensorRT runtime" not in readme
+    assert "安裝 TensorRT 執行環境" not in readme
+    assert "Windows · NVIDIA · 不是播放器" not in site
+    assert "RIFE + TensorRT。即時補幀" not in site
+    assert "ncnn" in site and "AMD" in site
+
+
 @pytest.mark.parametrize("surface", SURFACES)
 def test_the_untested_amd_path_is_still_labelled_untested(surface):
     """Naming the backend without the caveat would be worse than omitting it.

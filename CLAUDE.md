@@ -46,8 +46,8 @@ environment; CI runs 3.10 on `windows-latest`.
 - Run from source: `run.bat` or `py -3.10 -m fluid_motion`
 - Build: `build.bat` → `dist/FluidMotion.exe`, copied to the repo root
 
-`build.bat` uses `py -3`, which resolves to **3.14** on this machine — that is
-the interpreter releases are built with, and the artifact size differs
+`build.bat` requires `py -3.14` explicitly and never falls back to an
+unversioned interpreter. Releases use 3.14, and the artifact size differs
 noticeably on 3.10. Note also that `requirements.txt` is entirely unpinned and
 `build.bat` reinstalls at build time, so two builds of the same commit are not
 guaranteed to match.

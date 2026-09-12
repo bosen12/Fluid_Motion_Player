@@ -1,6 +1,9 @@
+import ast
 import builtins
 import dataclasses
+import math
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -21,6 +24,30 @@ def test_settings_roundtrip(tmp_path: Path):
     assert loaded.enabled is True
     assert loaded.profile == "120"
     assert loaded.rife_model == 426
+
+
+@pytest.mark.parametrize(
+    "payload, field, expected",
+    [
+        ([], "profile", "2x"),
+        ({"scene_threshold": "bad"}, "scene_threshold", 0.10),
+        ({"scene_threshold": None}, "scene_threshold", 0.10),
+        ({"scene_threshold": math.nan}, "scene_threshold", 0.10),
+        ({"scene_threshold": math.inf}, "scene_threshold", 0.10),
+        ({"rife_model": math.inf}, "rife_model", 426),
+        ({"mpv_root": ["C:/mpv"]}, "mpv_root", Settings().mpv_root),
+        ({"mpv_root": ""}, "mpv_root", Settings().mpv_root),
+        ({"enabled": "false"}, "enabled", False),
+        ({"fp16": "false"}, "fp16", True),
+        ({"autostart": "true"}, "autostart", False),
+    ],
+)
+def test_malformed_settings_fields_fall_back_individually(payload, field, expected):
+    """The config is user-editable and valid JSON can still have the wrong
+    schema.  One bad field must not crash startup or reinterpret strings as
+    truthy booleans.
+    """
+    assert getattr(Settings.from_dict(payload), field) == expected
 
 
 def test_trt_streams_is_pinned_to_one_on_load(tmp_path: Path):
@@ -375,18 +402,41 @@ def test_auto_apply_is_silent_user_toggle_announces():
     inject_src = Path(inject_mod.__file__).read_text(encoding="utf-8")
     watcher_src = Path(watcher_mod.__file__).read_text(encoding="utf-8")
     assert "announce: bool = False" in inject_src
-    # Only the two user-driven set_enabled() paths announce; the background
-    # tick's reconciling apply must stay silent or mpv shows an OSD toast
-    # every time it quietly catches up on a change.
-    assert "announce=True" in watcher_src
-    assert watcher_src.count("announce=True") == 2, "only the two set_enabled paths announce"
-    # The background tick's reconciling apply must stay silent, or mpv shows an
-    # OSD toast every time it quietly catches up on a change. Checked on the
-    # call's arguments rather than its exact text, so adding one does not read
-    # as the announce coming back.
-    tick_call = watcher_src.split("self._apply_to(player.pid, ipc, want_multi", 1)
-    assert len(tick_call) == 2, "the tick's apply call moved -- check it still stays silent"
-    assert "announce" not in tick_call[1].split(")", 1)[0]
+    # Only the two user-driven reconciliation paths announce; the background
+    # tick's apply must stay silent or mpv shows an OSD toast every time it
+    # quietly catches up on a change. Inspect calls instead of source layout.
+    tree = ast.parse(watcher_src)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    tick = functions["tick"]
+    applies = [
+        node
+        for node in ast.walk(tick)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_apply_to"
+    ]
+    assert len(applies) == 1
+    assert all(keyword.arg != "announce" for keyword in applies[0].keywords)
+
+    reconcile = functions["_reconcile_enabled"]
+    announced = [
+        node
+        for node in ast.walk(reconcile)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"_apply_to", "_remove_from"}
+        and any(
+            keyword.arg == "announce"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        )
+    ]
+    assert len(announced) == 2
 
 
 def test_vf_arg_uses_label():
@@ -885,6 +935,9 @@ def _tick_engine(monkeypatch, settings, ipc, pid=4321):
     monkeypatch.setattr(
         watcher_mod, "connect_pid", lambda p, extra=None, **kw: ipc
     )
+    monkeypatch.setattr(
+        watcher_mod, "player_config_dir", lambda _ipc: Path(settings.mpv_root)
+    )
     monkeypatch.setattr(watcher_mod, "diagnose", lambda root, **_kw: engine._runtime)
     monkeypatch.setattr(watcher_mod, "engine_cache_info", lambda: engine._engine_cache)
     engine._runtime.ready = True
@@ -1014,6 +1067,51 @@ def test_rapid_setting_changes_converge_on_the_last_one(monkeypatch, tmp_path):
     engine.tick()
     assert seen == ["144"], "the last selection wins, and it is actually applied"
     assert engine.settings.profile == "144"
+
+
+def test_concurrent_setting_changes_do_not_overwrite_each_other(monkeypatch, tmp_path):
+    """pywebview dispatches each bridge call on its own Python thread."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    gate = threading.Barrier(2)
+
+    class CoordinatedSettings(Settings):
+        def to_dict(self):
+            snapshot = super().to_dict()
+            try:
+                # Old code lets both callers take the same snapshot.  A fixed
+                # transaction lock lets the first caller time out here and the
+                # second observes its committed result instead.
+                gate.wait(timeout=0.15)
+            except threading.BrokenBarrierError:
+                pass
+            return snapshot
+
+    engine = watcher_mod.Engine(
+        CoordinatedSettings(enabled=False, profile="2x", rife_model=426, mpv_root=str(tmp_path))
+    )
+    monkeypatch.setattr(watcher_mod, "save_settings", lambda _settings: None)
+    errors = []
+
+    def change(**values):
+        try:
+            engine.update_settings(**values)
+        except Exception as exc:  # pragma: no cover - assertion reports it
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=change, kwargs={"profile": "3x"}),
+        threading.Thread(target=change, kwargs={"rife_model": 425}),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    assert engine.settings.profile == "3x"
+    assert engine.settings.rife_model == 425
 
 
 def test_failed_apply_is_retried_after_a_backoff(monkeypatch, tmp_path):
@@ -1177,10 +1275,30 @@ def test_chip_groups_are_not_rebuilt_on_every_poll():
 def test_in_flight_poll_cannot_repaint_stale_settings_over_a_command():
     js = (ui_dir() / "app.js").read_text(encoding="utf-8")
     assert "let commandEpoch = 0;" in js
-    assert "if (epoch !== commandEpoch) return;" in js
+    assert "if (epoch !== commandEpoch || pendingCommands > 0) return;" in js
     # Every settings mutation goes through command(), which bumps the epoch.
     for name in ("set_profile", "set_model", "set_scene", "set_enabled"):
         assert f'command("{name}"' in js, f"{name} must go through command()"
+
+
+def test_settings_commands_are_sent_in_user_action_order():
+    """Bridge calls run on separate threads, so the browser must not launch
+    two mutations concurrently and let lock acquisition reorder user intent.
+    """
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    assert "let commandQueue = Promise.resolve();" in js
+    assert "commandQueue.then(() => call(name, ...args))" in js
+    assert "pendingCommands > 0" in js
+    assert "commandId === commandEpoch" in js
+
+
+def test_a_ready_connected_player_can_enable_with_an_unready_global_root():
+    """AX Player loads from its own config directory, not settings.mpv_root."""
+    js = (ui_dir() / "app.js").read_text(encoding="utf-8")
+    render_body = js.split("function render(state) {", 1)[1].split("\n// Bumped", 1)[0]
+    assert "p.connected && p.ready" in render_body
+    assert "state.runtime.ready || playerRuntimeReady" in render_body
+    assert "toggle.disabled = !canEnable && !enabled;" in render_body
 
 
 def test_build_bat_does_not_report_success_after_a_failed_build():
@@ -1198,6 +1316,19 @@ def test_build_bat_does_not_report_success_after_a_failed_build():
     assert guard < built, "the success message must be gated on the exe existing"
     assert "BUILD FAILED" in bat
     assert "exit /b 1" in bat
+
+
+def test_build_uses_only_the_release_python_314_interpreter():
+    bat = (Path(__file__).resolve().parent.parent / "build.bat").read_text(encoding="utf-8")
+    commands = [
+        line.strip().lower()
+        for line in bat.splitlines()
+        if line.strip() and not line.strip().lower().startswith("rem ")
+    ]
+    assert "py -3.14 -m pyinstaller --noconfirm --clean fluidmotion.spec" in commands
+    assert any(line.startswith("py -3.14 -m pip ") for line in commands)
+    assert not any(re.search(r"(?<![\w.-])python\s+-m\s+", line) for line in commands)
+    assert not any(re.search(r"(?<![\w.-])py\s+-3(?:\s|$)", line) for line in commands)
 
 
 def test_named_pipe_reads_peek_before_blocking():

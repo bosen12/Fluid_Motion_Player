@@ -8,12 +8,9 @@ rem the same commit built on 3.10 produces a visibly smaller, different
 rem bundle. Failing loudly when 3.14 is absent is the point.
 cd /d "%~dp0"
 py -3.14 -m pip install -r requirements.txt pyinstaller -q
+if errorlevel 1 goto :failed
 py -3.14 -m PyInstaller --noconfirm --clean FluidMotion.spec
-if errorlevel 1 (
-  python -m pip install -r requirements.txt pyinstaller -q
-  python -m PyInstaller --noconfirm --clean FluidMotion.spec
-  if errorlevel 1 goto :failed
-)
+if errorlevel 1 goto :failed
 if not exist dist\FluidMotion.exe goto :failed
 copy /Y dist\FluidMotion.exe FluidMotion.exe >nul
 if errorlevel 1 (

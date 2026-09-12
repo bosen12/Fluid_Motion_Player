@@ -15,7 +15,9 @@ from fluid_motion.single import handover_or_continue
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fluid-motion", description="RIFE TensorRT 即時補幀")
+    parser = argparse.ArgumentParser(
+        prog="fluid-motion", description="RIFE 即時補幀（TensorRT 或 ncnn / Vulkan）"
+    )
     parser.add_argument("--start-hidden", action="store_true")
     parser.add_argument("--demo", action="store_true", help="只開啟介面，不連 mpv")
     args = parser.parse_args(argv)

@@ -2,7 +2,7 @@
 
 [English](#english) · [中文](#中文)
 
-Realtime **RIFE 4.6** frame interpolation for **mpv**, accelerated with **TensorRT + CUDA**. A tray app in the style of SVP4: auto-detects mpv, injects a VapourSynth filter, hides in the Windows notification area.
+Realtime **RIFE** frame interpolation for **mpv**, accelerated with **TensorRT + CUDA** on NVIDIA or **ncnn + Vulkan** on AMD. A tray app in the style of SVP4: auto-detects mpv, selects the matching backend, injects a VapourSynth filter, and hides in the Windows notification area.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Windows](https://img.shields.io/badge/platform-Windows-lightgrey)
@@ -75,7 +75,7 @@ Output: `dist\FluidMotion.exe` (one file). Do not run anything under `build\`.
 
 1. Start your player and begin playing something
 2. Start Fluid Motion — the UI should show the player as connected
-3. Click **Install TensorRT runtime** (once)
+3. Click **Install runtime** (once); Fluid Motion selects TensorRT or ncnn/Vulkan for the detected GPU
 4. Fully quit and reopen the player, so it picks up the new scripts
 5. Play a video and enable interpolation
 
@@ -97,7 +97,7 @@ connected player's config directory as well, not only the configured one.
 Restart that player once afterwards: mpv loads scripts only at launch, and
 the UI says so on the player's card.
 
-The first resolution compiles a TensorRT engine (a few minutes). Later plays at the same size reuse the cache (`%APPDATA%\FluidMotion\engines`).
+On NVIDIA, the first resolution compiles a TensorRT engine (a few minutes). Later plays at the same size reuse the cache (`%APPDATA%\FluidMotion\engines`). ncnn/Vulkan does not compile or use this engine cache.
 
 mpv hotkey **F3** toggles the filter. Existing bindings (for example F2) are left alone.
 
@@ -106,7 +106,7 @@ mpv hotkey **F3** toggles the filter. Existing bindings (for example F2) are lef
 ```
 mpv  →  \\.\pipe\fluid-mpv-<pid>
      →  vf @fluid:vapoursynth
-     →  vsmlrt.RIFE 4.6 + Backend.TRT (fp16, CUDA graphs)
+     →  vsmlrt.RIFE + Backend.TRT (NVIDIA) or Backend.NCNN_VK (AMD)
 ```
 
 ### Credits
@@ -171,7 +171,7 @@ build.bat
 
 1. 開啟播放器並開始播放
 2. 開啟 Fluid Motion——介面應顯示已接上該播放器
-3. 點 **安裝 TensorRT 執行環境**（只需一次）
+3. 點 **安裝執行環境**（只需一次）；Fluid Motion 會依偵測到的 GPU 選擇 TensorRT 或 ncnn/Vulkan
 4. **完全退出並重開播放器**，讓它載入新裝的腳本
 5. 播放影片，打開即時補幀
 
@@ -189,7 +189,7 @@ build.bat
 不再只裝設定檔裡那一個。裝完請把該播放器重開一次：mpv 只在啟動時載入腳本，
 播放器卡片上會提示。
 
-第一個解析度會編譯 TensorRT engine（可能數分鐘），之後同解析度走快取。
+NVIDIA 上第一個解析度會編譯 TensorRT engine（可能數分鐘），之後同解析度走快取；ncnn/Vulkan 不編譯也不使用這份 engine 快取。
 
 mpv **F3** 可切換濾鏡，不會覆蓋你現有的 F2 等快捷鍵。
 

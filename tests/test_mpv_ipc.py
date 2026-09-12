@@ -127,6 +127,29 @@ def test_a_caller_that_cannot_get_the_connection_fails_instead_of_corrupting_it(
     assert handle.writes == [], "a refused command must not reach the wire"
 
 
+def test_lock_wait_and_reply_wait_share_one_timeout():
+    """The advertised timeout covers the queue and the wire together."""
+    handle = _SilentHandle()
+    ipc = MpvIpc(handle, "unix", "fake-pipe")
+    ipc._lock.acquire()
+
+    def release_later():
+        time.sleep(0.20)
+        ipc._lock.release()
+
+    releaser = threading.Thread(target=release_later)
+    releaser.start()
+    started = time.monotonic()
+    with pytest.raises(IpcError, match="timed out"):
+        ipc.command("get_property", "vf", timeout=0.50)
+    elapsed = time.monotonic() - started
+    releaser.join(timeout=1)
+
+    assert 0.45 <= elapsed < 0.62, (
+        f"one 0.50s budget took {elapsed:.3f}s; lock and reply waits were added"
+    )
+
+
 class _SilentHandle:
     """Accepts every write and never replies. What a wedged mpv is on the wire.
 

@@ -69,19 +69,20 @@ class MpvIpc:
         # reason it would have timed out anyway. Refusing here is safe because
         # snapshot_playback now reports an unreadable `vf` as unknown rather
         # than as "no filter loaded".
-        if not self._lock.acquire(timeout=timeout):
+        deadline = time.monotonic() + timeout
+        remaining = max(0.0, deadline - time.monotonic())
+        if not self._lock.acquire(timeout=remaining):
             raise IpcError("mpv IPC busy")
         try:
-            return self._command_locked(*args, timeout=timeout)
+            return self._command_locked(*args, deadline=deadline)
         finally:
             self._lock.release()
 
-    def _command_locked(self, *args: Any, timeout: float) -> Any:
+    def _command_locked(self, *args: Any, deadline: float) -> Any:
         payload = {"command": list(args), "request_id": self._req}
         self._req += 1
         raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         self._write(raw)
-        deadline = time.time() + timeout
         # Backs off from 0.5ms so a prompt mpv still answers in well under a
         # millisecond -- snapshot_playback() issues a dozen of these per tick.
         idle = 0.0005
@@ -101,7 +102,7 @@ class MpvIpc:
                     if msg.get("error") not in (None, "success"):
                         raise IpcError(str(msg.get("error")))
                     return msg.get("data")
-            if time.time() >= deadline:
+            if time.monotonic() >= deadline:
                 raise IpcError("mpv IPC timed out")
             chunk = self._read(4096)
             if not chunk:

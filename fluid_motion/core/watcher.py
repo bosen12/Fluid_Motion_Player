@@ -52,6 +52,7 @@ from fluid_motion.core.mpv_ipc import IpcError, MpvIpc, connect_pid
 from fluid_motion.core.runtime import RuntimeStatus, diagnose, missing_labels
 from fluid_motion.core.vs_script import (
     BACKEND_NCNN,
+    backend_label,
     effective_backend,
     parse_fps,
     resolve_backend,
@@ -101,6 +102,11 @@ class Engine:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._lock = threading.RLock()
+        # pywebview runs every bridge call on its own Python thread. Keep the
+        # read/validate/persist/swap of the whole Settings object indivisible,
+        # but release this before any IPC: a busy player must not block a later
+        # settings transaction for seconds.
+        self._settings_lock = threading.RLock()
         self._ipc: dict[int, MpvIpc] = {}
         self._players: list[PlayerProcess] = []
         self._gpu = gpu_snapshot()
@@ -345,19 +351,22 @@ class Engine:
     def _held_off(self, pid: int, seeking: bool = False) -> bool:
         return interpolation_held_off(seeking, self._seek_hold_age(pid))
 
-    def _player_root(self, pid: int, ipc: MpvIpc) -> Path:
+    def _player_root(self, pid: int, ipc: MpvIpc) -> Path | None:
         """The config dir this player will load the filter from.
 
         Asked of mpv itself, because one configured mpv_root cannot answer it
         for everyone: an embedded host runs out of its own runtime folder and
-        a standalone mpv lives wherever it was installed. Falls back to the
-        setting only when mpv declines to answer.
+        a standalone mpv lives wherever it was installed. A missing answer is
+        transient -- commonly a busy pipe -- and must not be cached as the
+        configured fallback, because that can make readiness and the generated
+        script describe a directory this player never reads.
         """
         cached = self._config_dirs.get(pid)
         if cached is not None:
             return cached
-        root = player_config_dir(ipc) or Path(self.settings.mpv_root)
-        self._config_dirs[pid] = root
+        root = player_config_dir(ipc)
+        if root is not None:
+            self._config_dirs[pid] = root
         return root
 
     def _backend(self) -> str:
@@ -422,8 +431,8 @@ class Engine:
         key = str(root)
         if key in self._scripted:
             return
-        self._scripted.add(key)
         if lua_is_current(root):
+            self._scripted.add(key)
             return
         try:
             install_lua(root)
@@ -431,6 +440,7 @@ class Engine:
         except OSError as exc:
             self._error = str(exc)
             return
+        self._scripted.add(key)
         self._needs_restart.add(pid)
 
     def _mark_settling(self) -> None:
@@ -545,6 +555,7 @@ class Engine:
         announce: bool = False,
         wait: float = -1,
         info: dict[str, Any] | None = None,
+        root: Path | None = None,
     ) -> bool:
         """Apply the current settings to one mpv and record what was applied.
 
@@ -557,6 +568,13 @@ class Engine:
         # Resolved once, for both the key and the script. See _filter_key.
         backend = self._backend()
         key = self._filter_key(multi, backend)
+        if root is None:
+            root = self._config_dirs.get(pid) or player_config_dir(ipc)
+        if root is None:
+            self._error = "無法取得播放器設定目錄"
+            self._invalidate(pid)
+            return False
+        self._config_dirs[pid] = root
         if not self._apply_lock.acquire(timeout=wait):
             self._invalidate(pid)
             return False
@@ -569,12 +587,6 @@ class Engine:
             # that stop() never joins, so the ordering guard has to be here.
             if self._stop.is_set():
                 return False
-            # This player's own config dir, not the globally configured root:
-            # the .vpy is only loadable by the mpv that will read it, and a
-            # single setting cannot be right for an embedded host and a
-            # standalone mpv at the same time. Falls back to the setting when
-            # mpv declines to answer.
-            root = player_config_dir(ipc) or Path(self.settings.mpv_root)
             apply(
                 ipc, self.settings, root,
                 announce=announce, info=info, pid=pid, backend=backend,
@@ -718,6 +730,12 @@ class Engine:
             player.pipe = ipc.path
             player.connected = True
             root = self._player_root(player.pid, ipc)
+            if root is None:
+                player.ready = False
+                player.missing = "無法讀取播放器設定目錄"
+                self._player_ready[player.pid] = (False, player.missing)
+                live[player.pid] = ipc
+                continue
             self._ensure_player_scripts(root, player.pid)
             status = self._runtime_for(root)
             player.config_dir = str(root)
@@ -820,7 +838,14 @@ class Engine:
                 if (stale or missing) and time.monotonic() >= retry_at:
                     # tick() already has a full snapshot for this player; apply()
                     # reads only the rate fields out of it, which are present.
-                    if self._apply_to(player.pid, ipc, want_multi, wait=apply_wait, info=info):
+                    if self._apply_to(
+                        player.pid,
+                        ipc,
+                        want_multi,
+                        wait=apply_wait,
+                        info=info,
+                        root=root,
+                    ):
                         player.interpolation = want_multi > 1
             elif player.interpolation or applied is not None:
                 if self._remove_from(player.pid, ipc, wait=apply_wait):
@@ -897,9 +922,25 @@ class Engine:
             self._ipc = live
             self._players = players
 
+    def _store_settings(self, **changes: Any) -> Settings:
+        """Validate and persist one atomic settings transaction."""
+        with self._settings_lock:
+            data = self.settings.to_dict()
+            for key, value in changes.items():
+                if key in data:
+                    data[key] = value
+            validated = Settings.from_dict(data)
+            # Publish only a snapshot that reached disk. Rebinding is atomic,
+            # unlike changing twelve dataclass fields while tick() reads them.
+            save_settings(validated)
+            self.settings = validated
+            return validated
+
     def set_enabled(self, enabled: bool) -> None:
-        self.settings.enabled = bool(enabled)
-        save_settings(self.settings)
+        settings = self._store_settings(enabled=bool(enabled))
+        self._reconcile_enabled(settings.enabled)
+
+    def _reconcile_enabled(self, enabled: bool) -> None:
         with self._lock:
             ipcs = list(self._ipc.items())
         if enabled and not ipcs and not self._runtime.ready:
@@ -913,7 +954,7 @@ class Engine:
             # config dir is the one that decides, and settings.mpv_root being
             # ready says nothing about it -- that mismatch is what let the
             # filter be pushed into a player that could not load it.
-            self._error = "TensorRT 執行環境尚未就緒"
+            self._error = f"{backend_label(self._backend())} 執行環境尚未就緒"
             return
         for pid, ipc in ipcs:
             if enabled:
@@ -950,6 +991,7 @@ class Engine:
                 self._apply_to(
                     pid, ipc, resolve_multi(info, self.settings),
                     announce=True, wait=UI_APPLY_WAIT, info=info,
+                    root=self._config_dirs.get(pid),
                 )
             else:
                 self._remove_from(pid, ipc, announce=True, wait=UI_APPLY_WAIT)
@@ -962,19 +1004,9 @@ class Engine:
         # bridge) was written into the .vpy and saved as-is, then silently
         # became 0.30 on the next launch. Same config, different playback
         # either side of a restart.
-        data = self.settings.to_dict()
-        for key, value in kwargs.items():
-            if key in data:
-                data[key] = value
-        validated = Settings.from_dict(data)
-        # Mutated in place rather than rebound: tick() and the bridge threads
-        # both hold this same object.
-        for key, value in validated.to_dict().items():
-            setattr(self.settings, key, value)
-        if self.settings.enabled:
-            self.set_enabled(True)  # saves; no need to write the file twice
-        else:
-            save_settings(self.settings)
+        settings = self._store_settings(**kwargs)
+        if settings.enabled:
+            self._reconcile_enabled(True)
 
     def report(self, message: str) -> None:
         """Say something to the user from a bridge action.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -46,27 +47,61 @@ class Settings:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Settings":
-        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        settings = cls(**known)
-        if settings.profile not in PROFILES:
+    def from_dict(cls, data: object) -> "Settings":
+        defaults = cls()
+        if not isinstance(data, dict):
+            return defaults
+
+        settings = cls()
+        for name in ("enabled", "fp16", "cuda_graph", "start_hidden", "autostart"):
+            value = data.get(name)
+            if isinstance(value, bool):
+                setattr(settings, name, value)
+
+        profile = data.get("profile")
+        if isinstance(profile, str) and profile in PROFILES:
+            settings.profile = profile
+        else:
             # Also the migration path for the retired "60", and 2x is where it
             # lands correctly rather than by accident: 60 as a target rounded
             # to 2x on every common source anyway, so anyone who had it keeps
             # the interpolation they were actually getting.
             settings.profile = "2x"
+
         try:
-            settings.rife_model = int(settings.rife_model)
-        except (TypeError, ValueError):
+            model_value = data.get("rife_model", defaults.rife_model)
+            if isinstance(model_value, bool):
+                raise ValueError
+            settings.rife_model = int(model_value)
+        except (TypeError, ValueError, OverflowError):
             settings.rife_model = 426
         if settings.rife_model not in RIFE_MODELS:
             settings.rife_model = 426
+
         # Anything unrecognised (a hand-edited config, a value from a future
         # version) becomes "auto" rather than being trusted: the alternative is
         # a typo silently pinning a machine to a backend its GPU cannot run.
-        if settings.backend not in BACKEND_SETTINGS:
-            settings.backend = "auto"
-        settings.scene_threshold = min(0.30, max(0.02, float(settings.scene_threshold)))
+        backend = data.get("backend")
+        settings.backend = (
+            backend
+            if isinstance(backend, str) and backend in BACKEND_SETTINGS
+            else "auto"
+        )
+
+        try:
+            threshold_value = data.get("scene_threshold", defaults.scene_threshold)
+            if isinstance(threshold_value, bool):
+                raise ValueError
+            threshold = float(threshold_value)
+            if not math.isfinite(threshold):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            threshold = defaults.scene_threshold
+        settings.scene_threshold = min(0.30, max(0.02, threshold))
+
+        root = data.get("mpv_root")
+        if isinstance(root, str) and root.strip():
+            settings.mpv_root = root
         # Pinned, not clamped. Every extra TensorRT stream builds its own
         # execution context when the VapourSynth script loads, and mpv reloads
         # that script on every seek -- so the cost is paid per seek, forever.

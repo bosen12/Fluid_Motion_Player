@@ -142,6 +142,48 @@ def test_a_ready_player_is_still_filtered_from_its_own_directory(
     assert engine._players[0].ready is True
 
 
+def test_a_transient_config_dir_failure_is_not_cached(monkeypatch):
+    """An IPC timeout is an unknown answer, not evidence that this player uses
+    the globally configured mpv directory.  The next tick must ask again.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(CONFIGURED_ROOT)))
+    answers = iter((None, PLAYER_ROOT))
+    calls = 0
+
+    def config_dir(_ipc):
+        nonlocal calls
+        calls += 1
+        return next(answers)
+
+    monkeypatch.setattr(watcher_mod, "player_config_dir", config_dir)
+
+    assert engine._player_root(7, _FakeIpc()) is None
+    assert engine._player_root(7, _FakeIpc()) == PLAYER_ROOT
+    assert calls == 2
+
+
+def test_apply_uses_the_already_confirmed_player_root(monkeypatch):
+    """Readiness and apply must describe one directory.  A second failed IPC
+    read must not redirect the generated script to settings.mpv_root.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(CONFIGURED_ROOT)))
+    engine._config_dirs[7] = PLAYER_ROOT
+    monkeypatch.setattr(watcher_mod, "player_config_dir", lambda _ipc: None)
+    applied = _record_apply(monkeypatch)
+
+    assert engine._apply_to(
+        7,
+        _FakeIpc(),
+        2,
+        info={"container_fps": 24, "display_fps": 60},
+    ) is True
+    assert applied == [PLAYER_ROOT]
+
+
 def test_a_leftover_filter_is_taken_off_a_player_that_cannot_run_it(
     monkeypatch, engine_with_player
 ):
@@ -243,6 +285,33 @@ def test_a_script_that_is_already_current_is_not_rewritten(monkeypatch, tmp_path
     assert installed == [], "rewrote a script that was already current"
     assert 7 not in engine._needs_restart, "asked for a restart with nothing to load"
     assert (root / "scripts" / "zz-fluid-ipc.lua").read_bytes() == on_disk
+
+
+def test_a_failed_script_install_is_retried(monkeypatch, tmp_path):
+    """A transient file lock must not mark the directory complete forever."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path / "configured")))
+    root = tmp_path / "player"
+    attempts = 0
+
+    monkeypatch.setattr(watcher_mod, "lua_is_current", lambda _root: False)
+    monkeypatch.setattr(watcher_mod, "ensure_input_binding", lambda _root: None)
+
+    def install(_root):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporarily locked")
+
+    monkeypatch.setattr(watcher_mod, "install_lua", install)
+
+    engine._ensure_player_scripts(root, pid=7)
+    engine._ensure_player_scripts(root, pid=7)
+
+    assert attempts == 2
+    assert str(root) in engine._scripted
+    assert 7 in engine._needs_restart
 
 
 # -- naming the player -----------------------------------------------------

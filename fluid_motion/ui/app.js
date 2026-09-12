@@ -300,6 +300,7 @@ function tickNumber(el, next) {
 function render(state) {
   const enabled = Boolean(state.settings.enabled);
   const connected = state.connected || 0;
+  $("brand-backend").textContent = `RIFE · ${backendLabel(state.backend)}`;
   $("live").dataset.on = connected > 0 ? "true" : "false";
   $("live-text").textContent = connected > 0 ? "已接上 mpv" : "等待 mpv";
   // nvidia-smi is the only source of the live telemetry, but it is no longer
@@ -357,6 +358,8 @@ function render(state) {
   dstEl.setAttribute("aria-invalid", bad ? "true" : "false");
 
   const toggle = $("toggle");
+  const playerRuntimeReady = (state.players || []).some((p) => p.connected && p.ready);
+  const canEnable = Boolean(state.runtime.ready || playerRuntimeReady);
   setPressed(toggle, enabled);
   toggle.querySelector(".toggle-label").textContent = !enabled
     ? "未啟用"
@@ -365,8 +368,8 @@ function render(state) {
       : connected > 0
         ? "套用中"
         : "待命";
-  toggle.disabled = !state.runtime.ready && !enabled;
-  toggle.dataset.state = state.runtime.ready ? "ready" : "error";
+  toggle.disabled = !canEnable && !enabled;
+  toggle.dataset.state = canEnable ? "ready" : "error";
 
   renderPlayers(state.players || []);
   renderProfiles(state.settings.profile);
@@ -434,20 +437,29 @@ function render(state) {
 // the user changed something is answered from before that change, so dropping it
 // keeps the poll from repainting stale settings over the command's own result.
 let commandEpoch = 0;
+let commandQueue = Promise.resolve();
+let pendingCommands = 0;
 
-async function command(name, ...args) {
-  commandEpoch += 1;
-  const state = await call(name, ...args);
-  commandEpoch += 1;
-  render(state);
-  return state;
+function command(name, ...args) {
+  const commandId = ++commandEpoch;
+  pendingCommands += 1;
+  // pywebview starts one Python thread per bridge call. Queue mutations here
+  // so lock scheduling cannot reorder two quick user actions on the backend.
+  const task = commandQueue.then(() => call(name, ...args));
+  commandQueue = task.catch(() => undefined);
+  return task.finally(() => {
+    pendingCommands -= 1;
+  }).then((state) => {
+    if (commandId === commandEpoch) render(state);
+    return state;
+  });
 }
 
 async function refresh() {
   const epoch = commandEpoch;
   try {
     const state = await call("get_state");
-    if (epoch !== commandEpoch) return;
+    if (epoch !== commandEpoch || pendingCommands > 0) return;
     render(state);
   } catch (err) {
     $("toast").dataset.open = "true";

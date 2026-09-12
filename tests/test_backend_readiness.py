@@ -463,6 +463,35 @@ def test_no_runtime_message_tells_an_amd_user_to_install_tensorrt():
     assert "backendName(state.backend)" in js
 
 
+def test_no_player_runtime_error_names_the_resolved_ncnn_backend(monkeypatch, tmp_path):
+    from fluid_motion.config import Settings
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.vs_script import BACKEND_NCNN
+
+    engine = watcher_mod.Engine(Settings(backend="amd", mpv_root=str(tmp_path)))
+    engine._runtime.ready = False
+    monkeypatch.setattr(engine, "_backend", lambda: BACKEND_NCNN)
+    monkeypatch.setattr(watcher_mod, "iter_mpv_processes", lambda: [])
+
+    engine.set_enabled(True)
+
+    assert "ncnn / Vulkan" in engine._error
+    assert "TensorRT" not in engine._error
+
+
+def test_backend_neutral_app_shell_is_updated_from_resolved_state():
+    from fluid_motion.paths import project_root, ui_dir
+
+    html = (ui_dir() / "index.html").read_text(encoding="utf-8")
+    js = _code_only((ui_dir() / "app.js").read_text(encoding="utf-8"))
+    app_py = (project_root() / "fluid_motion" / "app.py").read_text(encoding="utf-8")
+
+    assert 'id="brand-backend"' in html
+    assert "RIFE · TensorRT" not in html
+    assert '$("brand-backend").textContent' in js
+    assert "RIFE TensorRT 即時補幀" not in app_py
+
+
 def test_the_gpu_panel_does_not_deny_a_gpu_it_can_name():
     """state.gpu comes from nvidia-smi, so an AMD machine had gpu.available
     false and was told "未偵測到 NVIDIA GPU" -- while state.adapters held its
