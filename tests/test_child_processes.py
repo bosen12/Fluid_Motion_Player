@@ -90,7 +90,13 @@ def test_a_finished_child_does_not_stay_registered():
 
 
 def test_output_is_captured_and_decoded_as_utf8():
-    result = proc.run_hidden([sys.executable, "-c", "print('gefo\\u0308rce')"])
+    # The child writes UTF-8 bytes to the buffer instead of using print(), which
+    # encodes with the child's own locale codepage -- cp1252 on the CI runner,
+    # cp950 on a zh-TW box, and neither can encode U+0308. The child died of
+    # UnicodeEncodeError there, so the test failed on the child's encoder rather
+    # than on run_hidden's decoder, which is the thing under test.
+    script = "import sys; sys.stdout.buffer.write('gefo\\u0308rce'.encode())"
+    result = proc.run_hidden([sys.executable, "-c", script])
     assert result.returncode == 0
     assert "geförce" in result.stdout
     assert result.stderr == ""
