@@ -26,8 +26,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     settings = load_settings()
-    if args.start_hidden:
-        settings.start_hidden = True
+    # About this launch only -- it is how the autostart entry runs the app. It
+    # used to be written onto `settings`, the object Engine persists whole on
+    # every change, so a single F3 (or tray toggle, or chip) during an
+    # autostarted session saved start_hidden=true into config.json, and from
+    # then on a launch by hand opened straight into the tray with no window.
+    start_hidden = args.start_hidden or settings.start_hidden
 
     icon_path = ensure_icon()
     engine = Engine(settings)
@@ -180,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     tray_ok.wait(timeout=1.5)
 
     def shown() -> None:
-        if settings.start_hidden and tray_ok.is_set():
+        if start_hidden and tray_ok.is_set():
             window.hide()
 
     engine.set_on_show(show_window)
