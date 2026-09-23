@@ -97,6 +97,10 @@ def is_disconnect_error(message: str) -> bool:
 # an apply before handing the work off to the next tick instead of blocking.
 UI_APPLY_WAIT = 0.5
 
+# _config_dirs holds None as an answer ("no config dir of its own"), so a
+# missing entry needs a marker of its own.
+_UNASKED = object()
+
 
 class Engine:
     def __init__(self, settings: Settings):
@@ -130,7 +134,9 @@ class Engine:
         self._runtime_cache: dict[tuple[str, str], RuntimeStatus] = {}
         # config-dir per pid. mpv answers this over IPC and it cannot change
         # while the process lives, so it is asked once rather than every tick.
-        self._config_dirs: dict[int, Path] = {}
+        # None is a real answer, not a missing one: "this mpv has no config
+        # dir of its own" -- see _player_root.
+        self._config_dirs: dict[int, Path | None] = {}
         self._player_ready: dict[int, tuple[bool, str]] = {}
         # Config dirs whose IPC script has been checked/installed this session.
         self._scripted: set[str] = set()
@@ -356,18 +362,30 @@ class Engine:
 
         Asked of mpv itself, because one configured mpv_root cannot answer it
         for everyone: an embedded host runs out of its own runtime folder and
-        a standalone mpv lives wherever it was installed. A missing answer is
-        transient -- commonly a busy pipe -- and must not be cached as the
-        configured fallback, because that can make readiness and the generated
+        a standalone mpv lives wherever it was installed.
+
+        Returns None only when mpv could not be asked. That is transient --
+        commonly a busy pipe -- and is neither cached nor papered over with
+        the configured root, because that can make readiness and the generated
         script describe a directory this player never reads.
+
+        An mpv that answers "no config dir of my own" (a standalone mpv.exe
+        without --config-dir; see player_config_dir) gets the configured root,
+        which is where such a player reads -- what every release before v1.6.9
+        did. The answer is cached, the path is not: it is looked up from the
+        setting each time, so a root the installer moves (start_bootstrap
+        rewrites mpv_root) is followed instead of pinned per pid.
         """
-        cached = self._config_dirs.get(pid)
-        if cached is not None:
-            return cached
-        root = player_config_dir(ipc)
-        if root is not None:
-            self._config_dirs[pid] = root
-        return root
+        # One lookup, not `in` then `[]`: this runs on the bridge thread too
+        # (_apply_to), and the tick's sweep can drop the pid between the two.
+        own = self._config_dirs.get(pid, _UNASKED)
+        if own is _UNASKED:
+            try:
+                own = player_config_dir(ipc)
+            except IpcError:
+                return None
+            self._config_dirs[pid] = own
+        return own if own is not None else Path(self.settings.mpv_root)
 
     def _backend(self) -> str:
         """The backend that will actually be generated for this machine."""
@@ -569,12 +587,11 @@ class Engine:
         backend = self._backend()
         key = self._filter_key(multi, backend)
         if root is None:
-            root = self._config_dirs.get(pid) or player_config_dir(ipc)
+            root = self._player_root(pid, ipc)
         if root is None:
             self._error = "無法取得播放器設定目錄"
             self._invalidate(pid)
             return False
-        self._config_dirs[pid] = root
         if not self._apply_lock.acquire(timeout=wait):
             self._invalidate(pid)
             return False
@@ -991,7 +1008,6 @@ class Engine:
                 self._apply_to(
                     pid, ipc, resolve_multi(info, self.settings),
                     announce=True, wait=UI_APPLY_WAIT, info=info,
-                    root=self._config_dirs.get(pid),
                 )
             else:
                 self._remove_from(pid, ipc, announce=True, wait=UI_APPLY_WAIT)
@@ -1072,7 +1088,12 @@ class Engine:
         with self._lock:
             connections = list(self._ipc.values())
         for ipc in connections:
-            root = player_config_dir(ipc)
+            try:
+                root = player_config_dir(ipc)
+            except IpcError:
+                continue
+            # None: a player with no config dir of its own reads the
+            # configured root, which is the fallback below.
             if root is not None:
                 return root
         fallback = Path(self.settings.mpv_root)

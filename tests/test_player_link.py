@@ -145,23 +145,203 @@ def test_a_ready_player_is_still_filtered_from_its_own_directory(
 def test_a_transient_config_dir_failure_is_not_cached(monkeypatch):
     """An IPC timeout is an unknown answer, not evidence that this player uses
     the globally configured mpv directory.  The next tick must ask again.
+
+    The failure is an IpcError, which is what the real player_config_dir
+    raises when mpv does not answer. This fake used to return None for it --
+    and None is also how player_config_dir spells "answered: no config dir of
+    my own", which is the conflation that left every standalone mpv
+    unfiltered in v1.6.9. See the tests below.
     """
     from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
 
     engine = watcher_mod.Engine(Settings(mpv_root=str(CONFIGURED_ROOT)))
-    answers = iter((None, PLAYER_ROOT))
+    answers = iter((IpcError("mpv IPC timed out"), PLAYER_ROOT))
     calls = 0
 
     def config_dir(_ipc):
         nonlocal calls
         calls += 1
-        return next(answers)
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     monkeypatch.setattr(watcher_mod, "player_config_dir", config_dir)
 
     assert engine._player_root(7, _FakeIpc()) is None
     assert engine._player_root(7, _FakeIpc()) == PLAYER_ROOT
     assert calls == 2
+
+
+def test_a_standalone_mpv_without_a_config_dir_is_filtered_from_the_configured_root(
+    monkeypatch, engine_with_player
+):
+    """The v1.6.9 regression, end to end through the real player_config_dir.
+
+    `config-dir` is the option, not the directory mpv ends up using, so a
+    plain mpv.exe started without --config-dir answers ''. Measured against
+    C:\\mpv's own mpv: config-dir '' while ~~/shaders/fluid_rife.vpy expands to
+    C:/mpv/shaders/fluid_rife.vpy. v1.6.9 read that answer as "could not ask",
+    marked the player 無法讀取播放器設定目錄 on every tick, and never applied
+    the filter to any standalone mpv again. Every release before it fell back
+    to the configured root, which is where such a player reads.
+    """
+    from fluid_motion.core import inject
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine, ipc = engine_with_player(player_ready=True)
+    ipc.props["config-dir"] = ""
+    monkeypatch.setattr(watcher_mod, "player_config_dir", inject.player_config_dir)
+    applied = _record_apply(monkeypatch)
+
+    engine.tick()
+
+    player = engine._players[0]
+    assert player.ready is True, player.missing
+    assert player.config_dir == str(CONFIGURED_ROOT)
+    assert applied == [CONFIGURED_ROOT], "a standalone mpv was never filtered"
+
+
+def test_an_unanswered_config_dir_still_blocks_the_player_for_that_tick(
+    monkeypatch, engine_with_player
+):
+    """The half of v1.6.9 that was right, kept: "mpv did not answer" is not
+    "mpv has no config dir". Guessing the configured root there is how the
+    script ends up written into a directory the player never reads.
+    """
+    from fluid_motion.core import inject
+    from fluid_motion.core import watcher as watcher_mod
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    engine, ipc = engine_with_player(player_ready=True)
+    real_get = ipc.get
+
+    def get(name, *, timeout=None):
+        if name == "config-dir":
+            raise IpcError("mpv IPC timed out")
+        return real_get(name, timeout=timeout)
+
+    ipc.get = get
+    monkeypatch.setattr(watcher_mod, "player_config_dir", inject.player_config_dir)
+    applied = _record_apply(monkeypatch)
+
+    engine.tick()
+
+    assert applied == [], "a guessed directory was used for a player that did not answer"
+    assert engine._players[0].ready is False
+    assert 99 not in engine._config_dirs, "an unknown answer was cached"
+
+
+def test_a_player_without_its_own_config_dir_follows_a_moved_root(monkeypatch, tmp_path):
+    """The answer is cached, the path is not. start_bootstrap() rewrites
+    mpv_root to wherever it installed; a standalone player that was pinned to
+    the old path would keep being judged, and written into, against a
+    directory the installer has just moved away from.
+    """
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(CONFIGURED_ROOT)))
+    calls = 0
+
+    def config_dir(_ipc):
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setattr(watcher_mod, "player_config_dir", config_dir)
+
+    assert engine._player_root(7, _FakeIpc()) == CONFIGURED_ROOT
+    moved = tmp_path / "installed-here"
+    engine.settings.mpv_root = str(moved)
+    assert engine._player_root(7, _FakeIpc()) == moved
+    assert calls == 1, "a definite answer was asked for again"
+
+
+class _SilentConfigIpc(_FakeIpc):
+    """Answers nothing about its config dir -- a busy pipe."""
+
+    def get(self, name, *, timeout=None):
+        if name == "config-dir":
+            from fluid_motion.core.mpv_ipc import IpcError
+
+            raise IpcError("mpv IPC timed out")
+        return super().get(name, timeout=timeout)
+
+
+def test_the_installer_targets_a_players_own_config_dir(tmp_path):
+    from fluid_motion.core import watcher as watcher_mod
+
+    own = tmp_path / "embedded-runtime"
+    own.mkdir()
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path / "configured")))
+    engine._ipc = {1: _SilentConfigIpc(), 2: _FakeIpc({"config-dir": str(own)})}
+
+    assert engine.install_root() == own, (
+        "one player that did not answer stopped the installer from asking the next"
+    )
+
+
+def test_a_standalone_player_installs_into_the_configured_root(tmp_path):
+    """No config dir of its own means it reads the configured root, so that
+    is where its runtime has to go -- provided an mpv actually lives there."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    configured = tmp_path / "mpv"
+    configured.mkdir()
+    (configured / "mpv.exe").write_bytes(b"")
+    engine = watcher_mod.Engine(Settings(mpv_root=str(configured)))
+    engine._ipc = {1: _FakeIpc({"config-dir": ""}), 2: _SilentConfigIpc()}
+
+    assert engine.install_root() == configured
+
+
+def test_the_installer_still_refuses_a_root_with_no_mpv(tmp_path):
+    from fluid_motion.core import watcher as watcher_mod
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path / "empty")))
+    engine._ipc = {1: _FakeIpc({"config-dir": ""})}
+
+    with pytest.raises(RuntimeError, match="mpv.exe"):
+        engine.install_root()
+
+
+def test_the_tick_sweeping_a_pid_mid_lookup_does_not_crash_a_click(monkeypatch):
+    """_player_root runs on the bridge thread (a click, via _apply_to) while
+    the tick thread sweeps _config_dirs for players that exited. `pid in d`
+    followed by `d[pid]` has a gap between them; this dict closes it the way
+    the sweep would, and the lookup must survive it."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    class _SweptBetween(dict):
+        def __contains__(self, key):
+            found = super().__contains__(key)
+            self.pop(key, None)  # the tick thread's sweep, in the gap
+            return found
+
+    engine = watcher_mod.Engine(Settings(mpv_root=str(CONFIGURED_ROOT)))
+    engine._config_dirs = _SweptBetween({7: PLAYER_ROOT})
+    monkeypatch.setattr(watcher_mod, "player_config_dir", lambda _ipc: PLAYER_ROOT)
+
+    assert engine._player_root(7, _FakeIpc()) == PLAYER_ROOT
+
+
+def test_player_config_dir_tells_its_three_answers_apart(tmp_path):
+    """The contract the watcher depends on, against the real function."""
+    from fluid_motion.core.inject import player_config_dir
+    from fluid_motion.core.mpv_ipc import IpcError
+
+    assert player_config_dir(_FakeIpc({"config-dir": str(tmp_path)})) == tmp_path
+    assert player_config_dir(_FakeIpc({"config-dir": ""})) is None
+
+    class _Silent(_FakeIpc):
+        def get(self, name, *, timeout=None):
+            raise IpcError("mpv IPC timed out")
+
+    with pytest.raises(IpcError):
+        player_config_dir(_Silent())
+    with pytest.raises(IpcError):
+        player_config_dir(_FakeIpc({"config-dir": str(tmp_path / "does-not-exist")}))
 
 
 def test_apply_uses_the_already_confirmed_player_root(monkeypatch):

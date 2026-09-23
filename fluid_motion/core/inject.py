@@ -712,15 +712,34 @@ def player_config_dir(ipc: MpvIpc) -> Path | None:
     lives wherever a package manager put it. mpv answers for itself over IPC,
     so ask instead of guessing -- this works for any mpv-based player,
     embedded or not, with no knowledge of how it was installed.
+
+    Three outcomes, and two of them used to be spelled the same way:
+
+    - a directory -- the player set a config dir of its own. AX Player does;
+      so does anything else that embeds libmpv with config enabled.
+    - None -- mpv answered, and it has no config dir of its own. `config-dir`
+      is only the *option*, so a plain mpv.exe started without --config-dir
+      reports an empty string. Measured against C:\\mpv's mpv: config-dir is
+      '' while ~~/shaders/fluid_rife.vpy expands to C:/mpv/shaders/..., because
+      without the option mpv searches %APPDATA%\\mpv and then its own exe dir.
+      That is an answer, not a failure: such a player reads the configured
+      root, which is what the caller falls back to.
+    - IpcError -- mpv did not answer (or answered a path that is not a
+      directory). That is unknown, and the caller must not substitute a guess
+      for it. v1.6.9 split "unknown" away from the fallback -- right -- but
+      folded the empty answer in with it, so every standalone mpv read as
+      "cannot read its config dir" forever and was never filtered at all.
     """
-    try:
-        value = ipc.get("config-dir")
-    except IpcError:
-        return None
+    value = ipc.get("config-dir")
     if not value:
         return None
     path = Path(str(value))
-    return path if path.is_dir() else None
+    if not path.is_dir():
+        # Not ours to create: a config dir mpv was pointed at that does not
+        # exist has no runtime in it either, and making one up here would
+        # install the lua into a directory nobody asked for.
+        raise IpcError(f"config-dir {value!r} is not a directory")
+    return path
 
 
 def apply(
