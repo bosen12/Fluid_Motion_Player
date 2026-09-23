@@ -43,7 +43,11 @@ Use an explicit version. `python -m pytest` picks up 3.12 here, which has no
 pytest. Both `py -3.10` and `py -3.14` have the full test and build
 environment; CI runs 3.10 on `windows-latest`.
 
-- Run from source: `run.bat` or `py -3.10 -m fluid_motion`
+- Run from source: `run.bat` or `py -3.10 -m fluid_motion`. **Don't time IPC
+  on 3.10**: its `time.sleep()` rounds `MpvIpc`'s 0.5 ms backoff up to
+  Windows' 15.6 ms tick, so a round trip reads 15.5 ms (a full snapshot
+  217 ms) against 1.0 ms (15 ms) on the 3.14 that releases ship. That gap is
+  where the old "15 ms while mpv is busy" figure came from.
 - Build: `build.bat` → `dist/FluidMotion.exe`, copied to the repo root
 
 `build.bat` requires `py -3.14` explicitly and never falls back to an
@@ -121,6 +125,17 @@ Other invariants:
   `~~/shaders/fluid_rife.vpy` (relative, and `~~` is the player's own config
   dir); handing `apply()` a different root writes the script in one place and
   points the filter at another, and mpv only says "could not init VS".
+- **mpv's `config-dir` is the option, not the directory in use.** A plain
+  `mpv.exe` without `--config-dir` answers `''` — measured — and reads
+  `~~/` from `%APPDATA%\mpv` and then its own exe dir, so the configured root
+  is right for it. `player_config_dir` therefore has three answers: a path,
+  `None` ("no config dir of its own" → configured root), and `IpcError`
+  (unknown → skip this tick, cache nothing). v1.6.9 folded `''` into
+  "unknown" and never filtered a standalone mpv again; keep them apart.
+- `apply()` forces four playback props (`interpolation`, `video-sync`, …) and
+  `remove()` gives back the ones still holding our value — the owner's own
+  mpv.conf sets `interpolation`, and it used to stay off after one F3.
+  Restoring them costs no playback time; restoring `hwdec` costs 0.2–0.4 s.
 - mpv reloads the `.vpy` on **every seek**, so it must never be readable
   half-written.
 - Changing `hwdec` at runtime costs ~0.65 s of stalled playback; setting it to
@@ -159,6 +174,13 @@ Route every interpolation of externally sourced data through `escapeHtml()`.
 The guard test asserts that per-interpolation — an earlier version counted
 `innerHTML` sites instead, which was already false of the sinks when it was
 written and would pass a swap.
+
+The bridge arrives **after** `DOMContentLoaded` (13–114 ms later, measured in
+WebView2), so `call()` waits for `pywebviewready` whenever
+`window.chrome.webview` says it is inside WebView2. The `mock` state is for a
+plain browser previewing the design only; painting it inside the app showed
+"runtime missing" and a live install button for ~0.9 s on every launch.
+`tests/test_ui_startup.py` runs the real `app.js` under node to pin that.
 
 ## Releases
 
