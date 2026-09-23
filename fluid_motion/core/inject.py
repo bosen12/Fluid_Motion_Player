@@ -436,15 +436,15 @@ def is_settling(short: bool, now: float, settling_until: float) -> bool:
 # and tick() walks players serially, so a second player waits it out too.
 #
 # The budget is one command timeout: a batch of reads is worth no more than
-# the single stuck read it is already allowed to cost. A slow-but-answering
-# mpv is untouched -- rate_snapshot's docstring puts a busy full set at
-# ~230ms, a tenth of this -- and a silent one now costs 2.5s, not 37.6s.
+# the single stuck read it is already allowed to cost. An answering mpv is
+# untouched -- the full set measures 15ms on the shipped interpreter and 217ms
+# on 3.10 (see rate_snapshot), both well inside this -- and a silent one now
+# costs 2.5s, not 37.6s.
 SNAPSHOT_BUDGET = COMMAND_TIMEOUT
 
 # Below this there is no point issuing the command at all: _command_locked
-# backs off from 0.5ms and this file's own docstring puts a busy round trip at
-# ~15ms, so a sliver of budget buys nothing but another unanswerable write on
-# the wire. It also keeps the cutoff deterministic -- the read that exhausts
+# backs off from 0.5ms and a round trip measures ~1ms (15ms on 3.10), so a
+# sliver of budget buys nothing but another unanswerable write on the wire. It also keeps the cutoff deterministic -- the read that exhausts
 # the budget lands a hair either side of zero depending on clock rounding, so
 # a `<= 0` test lets a second doomed command through about half the time.
 _MIN_READ = 0.005
@@ -486,9 +486,7 @@ def snapshot_playback(ipc: MpvIpc, *, budget: float = SNAPSHOT_BUDGET) -> dict[s
     drops = _get("frame-drop-count")
     # One read of vf, not two. interpolation_active() and current_filters()
     # each fetched it, so every player paid an extra IPC round trip three
-    # times a second for a value that had just been read -- and the docstring
-    # on rate_snapshot puts a round trip at ~15ms while mpv is busy running
-    # the filter.
+    # times a second for a value that had just been read.
     # Read separately from _get: this is the one property whose *failure*
     # changes a decision. vf_is_fluid(None) is False, which is
     # indistinguishable from a genuine "no filter loaded", so a busy mpv --
@@ -540,10 +538,19 @@ def rate_snapshot(ipc: MpvIpc, *, budget: float = SNAPSHOT_BUDGET) -> dict[str, 
     """Just the fields the multiplier depends on, and nothing else.
 
     snapshot_playback reads fourteen properties because the UI wants all of
-    them, and each round trip costs real time -- around 15ms while mpv's main
-    thread is busy running the filter, so the full set is roughly 230ms. Both
-    set_enabled and apply() were paying that to work out one integer, twice
-    per settings change, on top of the tick that follows.
+    them, and set_enabled and apply() were paying for all fourteen to work
+    out one integer, twice per settings change, on top of the tick that
+    follows.
+
+    This used to put a round trip at ~15ms "while mpv's main thread is busy
+    running the filter", and the full set at ~230ms. Re-measured against a
+    playing 1080p mpv, with and without RIFE loaded: on Python 3.14 -- what
+    releases are built with -- a round trip is 1.0ms and the full set 15ms,
+    busy or not. On 3.10 it is 15.5ms and 217ms, again busy or not. The
+    difference is the interpreter, not mpv: _command_locked's first backoff
+    sleep is 0.5ms, and before 3.11 time.sleep() on Windows rounds that up
+    to the 15.6ms system tick. Fewer reads is still the right shape for a
+    click path; the old figure was just describing the source checkout.
 
     Shares snapshot_playback's one-budget-per-batch rule for the same reason,
     with a smaller multiplier (three reads, so 7.5s against a silent mpv) and

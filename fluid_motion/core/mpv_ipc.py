@@ -83,8 +83,15 @@ class MpvIpc:
         self._req += 1
         raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         self._write(raw)
-        # Backs off from 0.5ms so a prompt mpv still answers in well under a
+        # Backs off from 0.5ms so a prompt mpv still answers in about a
         # millisecond -- snapshot_playback() issues a dozen of these per tick.
+        # Measured: 1.0ms a round trip on 3.14, whether or not RIFE is running.
+        # On 3.10 the same loop measures 15.5ms, because time.sleep() there
+        # rounds 0.5ms up to Windows' 15.6ms tick (3.11 moved to a
+        # high-resolution timer). Only a source checkout run on 3.10 sees that;
+        # releases are built on 3.14. Worth knowing before trusting a timing
+        # taken from source -- it is where the old "15ms while mpv is busy"
+        # figure came from.
         idle = 0.0005
         while True:
             # Drain first: the reply may already be sitting in the carried-over
