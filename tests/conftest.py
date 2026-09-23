@@ -40,3 +40,14 @@ def isolated_appdata(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gpu_mod, "_ADAPTERS", None)
     monkeypatch.setattr(gpu_mod, "_VENDORS", None)
+
+    # What apply() changed on each player and owes back, keyed by pid. Tests
+    # reuse small pids (7, 99, 4321), so a record one test leaves behind is
+    # restored onto the next test's fake mpv by its first remove() -- a set()
+    # that test never asked for. The hwdec map has had that exposure all
+    # along; tests that touch it clear it by hand, which is the "luck rather
+    # than isolation" described above.
+    from fluid_motion.core import inject as inject_mod
+
+    monkeypatch.setattr(inject_mod, "_PREV_HWDEC", {})
+    monkeypatch.setattr(inject_mod, "_PREV_PROPS", {})

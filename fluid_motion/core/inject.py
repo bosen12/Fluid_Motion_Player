@@ -55,7 +55,21 @@ _PLAYBACK_PROPS = (
 )
 
 
-def _sync_playback_props(ipc: MpvIpc) -> None:
+# What each player had before _sync_playback_props changed it, keyed by pid for
+# the reason _PREV_HWDEC is. These used to be set and never put back, so turning
+# interpolation off left the player running a configuration nobody chose. The
+# owner's own mpv.conf sets `interpolation` (with tscale=oversample, for 24fps
+# on a 165Hz panel): one F3 and mpv's smoothmotion stayed off until the player
+# was restarted. A default config loses video-sync=audio the same way. Measured
+# against a playing mpv, setting any of the four back costs no playback time
+# (within the +/-0.02s noise of a control; hwdec, by contrast, stalls 0.2-0.4s).
+#
+# Memory only, unlike hwdec: a player stranded on these by a crash is running a
+# slightly different sync mode, not paying a GPU->CPU copy on every frame.
+_PREV_PROPS: dict[int, dict[str, Any]] = {}
+
+
+def _sync_playback_props(ipc: MpvIpc, pid: int | None = None) -> None:
     """Set only the playback props that actually differ. Never touch window-minimized:
     flipping it on every apply un-minimizes mpv for no reason.
     """
@@ -69,7 +83,69 @@ def _sync_playback_props(ipc: MpvIpc) -> None:
         try:
             ipc.set(name, want)
         except IpcError:
-            pass
+            continue
+        # Only a value that was actually read: None is "could not ask", and
+        # putting that back later would be inventing a setting.
+        #
+        # Overwritten, not setdefault: what gets restored is what the player
+        # had just before *this* change. A value equal to ours was skipped
+        # above, so whatever is recorded here was set by somebody else -- and
+        # if the user switched video-sync while RIFE was on and a re-apply
+        # after a seek overrode it again, their switch is the one to hand
+        # back, not whatever the config said an hour earlier.
+        if pid is not None and current is not None:
+            _PREV_PROPS.setdefault(pid, {})[name] = current
+
+
+def restore_playback_props(ipc: MpvIpc, pid: int | None = None) -> None:
+    """Put back what _sync_playback_props changed, where it is still ours.
+
+    Only a prop that still holds the value this app set is restored. Anything
+    else was changed after us -- a key binding, a script, the user typing into
+    the console -- and is theirs now; overwriting it with a value from before
+    would undo a choice made later than ours.
+    """
+    if pid is None:
+        return
+    saved = _PREV_PROPS.pop(pid, None)
+    if not saved:
+        return
+    ours = dict(_PLAYBACK_PROPS)
+    pending = list(saved.items())
+    for index, (name, previous) in enumerate(pending):
+        # Anything not restored is kept for the next remove() rather than
+        # lost, same as a refused hwdec restore -- and dropped by the
+        # watcher's sweep if the player is actually gone.
+        try:
+            current = ipc.get(name)
+        except IpcError:
+            # No answer to a read of a prop mpv always has: the player is not
+            # answering, and mpv serves IPC from one thread, so it will not
+            # answer the next one either. The rest go back unasked -- each
+            # would cost a full command timeout for nothing, which is
+            # snapshot_playback's 37-second shape, on the quit path.
+            kept = _PREV_PROPS.setdefault(pid, {})
+            for left_name, left_previous in pending[index:]:
+                kept.setdefault(left_name, left_previous)
+            break
+        if current != ours[name]:
+            continue
+        try:
+            ipc.set(name, previous)
+        except IpcError:
+            # A refusal is an answer: mpv is there, so the others are still
+            # worth putting back.
+            _PREV_PROPS.setdefault(pid, {}).setdefault(name, previous)
+
+
+def playback_prop_pids() -> list[int]:
+    """Players whose own playback props are still being held for them."""
+    return list(_PREV_PROPS)
+
+
+def forget_playback_props(pid: int) -> None:
+    """Drop a departed player's saved props without trying to restore them."""
+    _PREV_PROPS.pop(pid, None)
 
 
 def _vf_arg(script: Path | None = None) -> str:
@@ -810,7 +886,7 @@ def apply(
         raise IpcError(f"無法加入補幀濾鏡：{exc}") from exc
     if not fluid_filter_loaded(ipc):
         raise IpcError("補幀濾鏡已送出，但沒有掛上 mpv 的 vf")
-    _sync_playback_props(ipc)
+    _sync_playback_props(ipc, pid)
     if announce:
         try:
             # The backend that was actually resolved, not a hardcoded name:
@@ -873,6 +949,8 @@ def remove(ipc: MpvIpc, *, announce: bool = False, pid: int | None = None) -> No
             raise IpcError("送出移除之後,補幀濾鏡仍掛在 mpv 的 vf 上")
     # The filter is gone, so copy-back's GPU->CPU transfer is pure cost now.
     restore_hwdec(ipc, pid)
+    # And the sync settings it needed are the player's own again.
+    restore_playback_props(ipc, pid)
     if announce:
         try:
             ipc.command("show-text", "Fluid Motion  off", 1200)

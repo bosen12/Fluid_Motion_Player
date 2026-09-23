@@ -28,6 +28,7 @@ from fluid_motion.core.inject import (
     apply,
     flush_hwdec_state,
     forget_hwdec,
+    forget_playback_props,
     interpolation_active,
     hwdec_pids,
     interpolation_held_off,
@@ -40,6 +41,7 @@ from fluid_motion.core.inject import (
     output_shortfall,
     playback_is_clean,
     player_config_dir,
+    playback_prop_pids,
     rate_snapshot,
     realtime_label,
     realtime_ratio,
@@ -899,6 +901,10 @@ class Engine:
             # of its life, paying the GPU->CPU transfer with no filter on.
             for pid in [p for p in hwdec_pids() if p not in seen_pids]:
                 forget_hwdec(pid)
+            # Same sweep, same key, for the playback props apply() changed.
+            # Nothing to restore a departed player to, and a pid is reusable.
+            for pid in [p for p in playback_prop_pids() if p not in seen_pids]:
+                forget_playback_props(pid)
             if not live:
                 self._error = ""
         now = time.monotonic()
