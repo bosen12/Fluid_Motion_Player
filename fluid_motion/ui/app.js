@@ -87,12 +87,32 @@ function api() {
   return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
 }
 
+// pywebview injects the bridge a moment *after* DOMContentLoaded. Measured in
+// WebView2: absent at DOMContentLoaded every time, callable 13-114 ms later.
+// Nothing asked again until the 900 ms poll, and until then call() answered
+// with the mock -- so every visible launch spent ~0.9 s showing a made-up
+// GPU, the toggle reading 未啟用 on a machine where it was on, and
+// 「還缺 TensorRT 執行環境」 beside a live install button on a machine that had
+// the runtime installed.
+//
+// window.chrome.webview is WebView2's own host object and is there from the
+// start (also measured), so it tells "the bridge is on its way" apart from "a
+// plain browser previewing the design" -- the only place the mock belongs.
+function embedded() {
+  return Boolean(window.chrome && window.chrome.webview);
+}
+
+// Only ever awaited while api() is missing, so the event is the one way in.
+const bridgeReady = new Promise((resolve) => {
+  window.addEventListener("pywebviewready", resolve, { once: true });
+});
+
 async function call(name, ...args) {
+  // A click that lands before the bridge does waits for it rather than being
+  // answered by the mock and lost.
+  if (!api() && embedded()) await bridgeReady;
   const bridge = api();
-  if (!bridge || typeof bridge[name] !== "function") {
-    if (name === "get_state") return mock;
-    return mock;
-  }
+  if (!bridge || typeof bridge[name] !== "function") return mock;
   return bridge[name](...args);
 }
 
@@ -532,9 +552,13 @@ function bind() {
 // it: an idle get_state() measures 0.200ms, which is 13.4ms of work per minute
 // at this interval -- an order of magnitude below the figures that retired the
 // other performance items. So the gate is gone rather than reimplemented.
+//
+// No render(mock) up front any more: inside pywebview the first refresh()
+// waits for the bridge and paints real state (before WebView2's own first
+// paint, as measured -- ~240 ms after the window opens), and in a plain
+// browser call() still answers with the mock straight away.
 document.addEventListener("DOMContentLoaded", () => {
   bind();
-  render(mock);
   refresh();
   setInterval(refresh, 900);
 });
