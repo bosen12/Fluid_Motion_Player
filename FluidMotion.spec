@@ -30,6 +30,16 @@ for pkg in ("webview", "pythonnet", "clr_loader", "pystray"):
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
+# PIL stays -- icon.py draws the tray icon with it. numpy does not: nothing in
+# this app, pywebview or pystray imports it. It came in through PIL._typing,
+# which imports numpy.typing under `if TYPE_CHECKING:` -- never true at runtime,
+# but PyInstaller's analysis does not evaluate the condition -- and numpy's own
+# submodules then dragged in yaml (numpy.__config__) and charset_normalizer
+# (numpy.f2py). Traced from PyInstaller's xref graph; the build interpreter's
+# site-packages is shared with AX Player, which is how numpy was there to be
+# found. tests/test_bundle_contents.py pins that excluding it stays safe.
+excludes = ["pytest", "unittest", "numpy"]
+
 a = Analysis(
     ["packaging/launch.py"],
     pathex=[],
@@ -39,7 +49,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "unittest"],
+    excludes=excludes,
     noarchive=False,
 )
 pyz = PYZ(a.pure)
