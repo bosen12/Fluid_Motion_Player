@@ -38,7 +38,29 @@ for pkg in ("webview", "pythonnet", "clr_loader", "pystray"):
 # (numpy.f2py). Traced from PyInstaller's xref graph; the build interpreter's
 # site-packages is shared with AX Player, which is how numpy was there to be
 # found. tests/test_bundle_contents.py pins that excluding it stays safe.
-excludes = ["pytest", "unittest", "numpy"]
+#
+# The rest were measured the same way -- never loaded by a running app -- and
+# each one's importer already treats its absence as normal:
+#
+# - cryptography (9.5 MB raw): pywebview imports it only inside
+#   __generate_ssl_cert(), which start() calls only for ssl=True. The default is
+#   False and app.py never passes it.
+# - PIL's optional codecs: _avif (7.5 MB), _imagingft (FreeType, 2.1 MB),
+#   _webp, _imagingcms. The frozen app loads _imaging and _imagingmath and
+#   nothing else from PIL; the tray icon is a PNG drawn with shapes, no text.
+#   Every one of these is imported by Pillow under try/except ImportError --
+#   AvifImagePlugin and WebPImagePlugin just report SUPPORTED = False -- so
+#   Image.init() walking all the plugins is unaffected.
+excludes = [
+    "pytest",
+    "unittest",
+    "numpy",
+    "cryptography",
+    "PIL._avif",
+    "PIL._imagingft",
+    "PIL._webp",
+    "PIL._imagingcms",
+]
 
 a = Analysis(
     ["packaging/launch.py"],

@@ -58,6 +58,21 @@ bundle. Note also that `requirements.txt` is entirely unpinned and
 `build.bat` reinstalls at build time, so two builds of the same commit are not
 guaranteed to match.
 
+`FluidMotion.spec`'s `excludes` leaves out what the running app never loads:
+numpy (pulled in only through `PIL._typing`'s `TYPE_CHECKING` import),
+cryptography (pywebview's `ssl=True` path) and PIL's optional codecs (`_avif`,
+`_imagingft`, `_webp`, `_imagingcms`). The onefile went from 38.1 to 17.8 MB.
+PIL itself stays — the tray icon is drawn and loaded with it, and `tray()`
+swallows `ImportError`, so a broken PIL would not crash anything; the icon would
+just never appear. `tests/test_bundle_contents.py` runs the real icon path in a
+child interpreter with every excluded module blocked, so a new exclude that
+breaks it goes red here rather than on a user's machine.
+
+Smoke-testing the onefile: stop only the **child** process (the one that owns
+the window). Killing the bootloader parent skips its cleanup and leaves a
+`_MEI*` directory in `%TEMP%` per launch. `--demo` bypasses the single-instance
+mutex and does not start the engine, so it is the safe mode for launch checks.
+
 Tests use fakes (`_FakeIpc`) rather than a live mpv and need no GPU.
 `tests/conftest.py` redirects `APPDATA` per test — without it a test overwrites
 the real user's `config.json`, which has happened.
