@@ -216,7 +216,7 @@ def test_apply_lock_is_released_even_when_mpv_refuses(tmp_path, monkeypatch):
     from fluid_motion.core import watcher as watcher_mod
     from fluid_motion.core.mpv_ipc import IpcError
 
-    engine = watcher_mod.Engine(Settings(mpv_root=str(tmp_path)))
+    engine = watcher_mod.Engine(Settings(enabled=True, mpv_root=str(tmp_path)))
 
     def boom(*args, **kwargs):
         raise IpcError("nope")
@@ -411,7 +411,7 @@ def test_auto_apply_is_silent_user_toggle_announces():
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    tick = functions["tick"]
+    tick = functions["_tick"]
     applies = [
         node
         for node in ast.walk(tick)

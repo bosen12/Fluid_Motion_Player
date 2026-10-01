@@ -19,7 +19,7 @@ def engine(monkeypatch):
     from fluid_motion.core import watcher as watcher_mod
 
     monkeypatch.setattr(watcher_mod, "iter_mpv_processes", lambda: [])
-    return watcher_mod.Engine(Settings(mpv_root="Z:/cfg"))
+    return watcher_mod.Engine(Settings(enabled=True, mpv_root="Z:/cfg"))
 
 
 class _FakeIpc:

@@ -350,7 +350,7 @@ def test_apply_uses_the_already_confirmed_player_root(monkeypatch):
     """
     from fluid_motion.core import watcher as watcher_mod
 
-    engine = watcher_mod.Engine(Settings(mpv_root=str(CONFIGURED_ROOT)))
+    engine = watcher_mod.Engine(Settings(enabled=True, mpv_root=str(CONFIGURED_ROOT)))
     engine._config_dirs[7] = PLAYER_ROOT
     monkeypatch.setattr(watcher_mod, "player_config_dir", lambda _ipc: None)
     applied = _record_apply(monkeypatch)

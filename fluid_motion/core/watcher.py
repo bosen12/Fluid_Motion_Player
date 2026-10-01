@@ -149,6 +149,7 @@ class Engine:
         # rebuilding its pipeline) leaves a multi-second window where the two
         # can race and stomp on each other's vf remove+add / .vpy write.
         self._apply_lock = threading.Lock()
+        self._tick_lock = threading.Lock()
         # The settings that actually reached each mpv. player.interpolation
         # only says *a* filter is loaded, never whether it matches the current
         # settings -- so a change that got skipped (seek hold-off) or failed
@@ -586,6 +587,7 @@ class Engine:
         a slow apply cannot freeze the window.
         """
         # Resolved once, for both the key and the script. See _filter_key.
+        settings = self.settings
         backend = self._backend()
         key = self._filter_key(multi, backend)
         if root is None:
@@ -606,10 +608,21 @@ class Engine:
             # that stop() never joins, so the ordering guard has to be here.
             if self._stop.is_set():
                 return False
+            # Settings are replaced, never edited in place. A queued request
+            # must not rebuild the filter after a newer UI request supersedes it.
+            if self.settings is not settings or not settings.enabled:
+                return False
             apply(
-                ipc, self.settings, root,
+                ipc, settings, root,
                 announce=announce, info=info, pid=pid, backend=backend,
             )
+            # Publish before releasing the operation lock, otherwise a newer
+            # remove can finish first and this worker resurrects its old key.
+            with self._lock:
+                self._applied[pid] = key
+                self._retry_at.pop(pid, None)
+            self._mark_settling()
+            self._error = ""
         except IpcError as exc:
             gone = is_disconnect_error(str(exc))
             if not gone:
@@ -622,11 +635,6 @@ class Engine:
             return False
         finally:
             self._apply_lock.release()
-        with self._lock:
-            self._applied[pid] = key
-            self._retry_at.pop(pid, None)
-        self._mark_settling()
-        self._error = ""
         return True
 
     def _remove_from(self, pid: int, ipc: MpvIpc, *, announce: bool = False, wait: float = -1) -> bool:
@@ -635,6 +643,8 @@ class Engine:
             return False
         try:
             remove(ipc, announce=announce, pid=pid)
+            self._invalidate(pid)
+            self._error = ""
         except IpcError as exc:
             if not is_disconnect_error(str(exc)):
                 self._error = str(exc)
@@ -642,8 +652,6 @@ class Engine:
             return False
         finally:
             self._apply_lock.release()
-        self._invalidate(pid)
-        self._error = ""
         return True
 
     def _consume_hotkey(self) -> None:
@@ -717,6 +725,17 @@ class Engine:
                     pass
 
     def tick(self, *, apply_wait: float = -1) -> None:
+        # Bridge requests may arrive while discovery or IPC is blocked. Do not
+        # duplicate that work or queue the UI behind it; the next tick converges.
+        if self._stop.is_set() or not self._tick_lock.acquire(blocking=False):
+            return
+        try:
+            if not self._stop.is_set():
+                self._tick(apply_wait=apply_wait)
+        finally:
+            self._tick_lock.release()
+
+    def _tick(self, *, apply_wait: float = -1) -> None:
         """apply_wait is how long to queue behind an in-flight apply.
 
         The background loop blocks (-1) because it *is* the worker. A tick
@@ -728,7 +747,7 @@ class Engine:
         players = iter_mpv_processes()
         live: dict[int, MpvIpc] = {}
         with self._lock:
-            old = self._ipc
+            old = dict(self._ipc)
         # With more than one player around, a pipe name that does not name a
         # pid cannot tell them apart -- see _AMBIGUOUS_PIPES. It stays allowed
         # for a lone player, where it is sometimes the only way in and cannot
@@ -736,16 +755,27 @@ class Engine:
         allow_ambiguous = len(players) <= 1
         seen_pids = {player.pid for player in players}
         for player in players:
+            if self._stop.is_set():
+                break
             ipc = old.get(player.pid)
             if ipc is None:
                 ipc = connect_pid(player.pid, allow_ambiguous=allow_ambiguous)
             if ipc is None:
                 continue
+            if self._stop.is_set():
+                if player.pid not in old:
+                    ipc.close()
+                break
             try:
                 info = snapshot_playback(ipc)
             except IpcError:
-                ipc.close()
+                if player.pid not in old or not self._stop.is_set():
+                    ipc.close()
                 continue
+            if self._stop.is_set():
+                if player.pid not in old:
+                    ipc.close()
+                break
             player.pipe = ipc.path
             player.connected = True
             root = self._player_root(player.pid, ipc)
@@ -870,7 +900,9 @@ class Engine:
                 if self._remove_from(player.pid, ipc, wait=apply_wait):
                     player.interpolation = False
         for pid, ipc in old.items():
-            if pid not in live:
+            # Published pipes belong to stop() once shutdown begins: it must
+            # remove the filter and restore hwdec before closing them.
+            if pid not in live and not self._stop.is_set():
                 ipc.close()
         with self._lock:
             for pid in [p for p in self._applied if p not in live]:
@@ -942,8 +974,18 @@ class Engine:
                 self._runtime = runtime
                 self._engine_cache = cache
         with self._lock:
-            self._ipc = live
-            self._players = players
+            stopped = self._stop.is_set()
+            if not stopped:
+                self._ipc = live
+                self._players = players
+        if stopped:
+            # stop() can only close published connections. A connection found
+            # by this in-flight tick also belongs to us, but must never escape
+            # back into _ipc once shutdown has emptied it.
+            for pid, ipc in live.items():
+                if pid not in old:
+                    self._remove_from(pid, ipc, wait=2.0)
+                    ipc.close()
 
     def _store_settings(self, **changes: Any) -> Settings:
         """Validate and persist one atomic settings transaction."""
