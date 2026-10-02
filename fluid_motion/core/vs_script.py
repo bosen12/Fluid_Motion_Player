@@ -205,6 +205,99 @@ def resolve_backend(setting: str, vendors: set[str] | frozenset[str]) -> str:
     return BACKEND_TRT
 
 
+# Spliced into the TensorRT script right after `from vsmlrt import ...`.
+#
+# vsmlrt gives every engine its own timing cache, named after the engine
+# (`--timingCacheFile=<engine>.cache`), and the engine name includes the
+# resolution. So every new resolution re-times every tactic from nothing,
+# although the layers are the same network at a different size. Measured on
+# an RTX 5070 Ti / TensorRT 10.16, RIFE 4.26, builder level 3: a cold 720p
+# build took 40.9 s; the same build with the 1080p cache copied into place
+# first took 21.2 s, and the engine ran at the same speed (426.1 vs 425.0 fps,
+# three interleaved rounds each). trtexec writes the merged cache back, so
+# seeding from the newest cache accumulates across resolutions.
+#
+# Rejected for the same goal, measured in the same session: builder level 1
+# builds 1080p in 15 s instead of 40-46 s but runs 4.5% slower at 1080p and
+# 6.3% slower at 4K (48.3 fps against the 47.95 a 23.976 fps 4K source needs
+# at 2x -- no headroom left before mpv's own decode). Level 2 saved 1-6 s and
+# would have invalidated every cached engine, the level being part of the
+# name. max_tactics is not part of the engine name at all, so a cheaper engine
+# would silently replace the normal one under the same file.
+#
+# Seeding never changes which engine file is used or what goes into it
+# beyond tactic timings, and trtexec ignores an unreadable cache (a random
+# file and a truncated one both measured as a normal cold build). A seed that
+# makes the build *fail* anyway -- say a well-formed cache from another
+# TensorRT version -- is removed and the build retried once without it.
+# mpv re-runs this script on every seek; with the engine already built, the
+# wrapper only adds two stat calls.
+_TRT_TIMING_CACHE_SEED = r'''
+import copy as _fm_copy
+import shutil as _fm_shutil
+import vsmlrt as _fm_vsmlrt
+
+_FM_ENGINE_DIR = r"__ENGINE_DIR__"
+_FM_ENGINE_DIR = os.path.normcase(os.path.abspath(_FM_ENGINE_DIR)) if _FM_ENGINE_DIR else ""
+_fm_seeded = []
+_fm_get_engine_path = _fm_vsmlrt.get_engine_path
+
+
+def _fm_seeding_get_engine_path(*args, **kwargs):
+    path = _fm_get_engine_path(*args, **kwargs)
+    try:
+        folder = os.path.dirname(path)
+        cache = path + ".cache"
+        built = os.path.isfile(path) and os.path.getsize(path) >= 1024
+        if (not built and not os.path.exists(cache)
+                and os.path.normcase(os.path.abspath(folder)) == _FM_ENGINE_DIR):
+            seeds = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".engine.cache")]
+            seeds = [s for s in seeds if os.path.getsize(s) > 0]
+            if seeds:
+                _fm_shutil.copyfile(max(seeds, key=os.path.getmtime), cache)
+                _fm_seeded.append(cache)
+    except OSError:
+        pass
+    return path
+
+
+def _fm_unseed():
+    _fm_vsmlrt.get_engine_path = _fm_get_engine_path
+    undone = False
+    for cache in _fm_seeded:
+        try:
+            os.remove(cache)
+            undone = True
+        except OSError:
+            pass
+    del _fm_seeded[:]
+    return undone
+
+
+def _fm_retry_unseeded(rife):
+    def call(*args, **kwargs):
+        # RIFE() mutates the backend it is given (force_fp16, custom_args), so
+        # the retry gets an untouched copy. Only the backend: the clip is a
+        # VideoNode, which cannot be copied at all -- deep-copying every
+        # argument raised before RIFE ever ran, on every single call.
+        pristine = _fm_copy.deepcopy(kwargs.get("backend"))
+        try:
+            return rife(*args, **kwargs)
+        except Exception:
+            if not _fm_unseed():
+                raise
+            if pristine is not None:
+                kwargs["backend"] = pristine
+            return rife(*args, **kwargs)
+    return call
+
+
+if _FM_ENGINE_DIR:
+    _fm_vsmlrt.get_engine_path = _fm_seeding_get_engine_path
+    RIFE = _fm_retry_unseeded(RIFE)
+'''
+
+
 def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_fps: float | None = None) -> str:
     multi, _video_player = target_multi(params.profile, source_fps, display_fps)
     engine = Path(params.engine_folder).as_posix() if params.engine_folder else ""
@@ -254,6 +347,7 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
         num_streams=NCNN_STREAMS,
         output_format=1,
     ),"""
+        seed_block = ""  # ncnn builds no engine and has no timing cache
     else:
         label = backend_label(params.backend)
         accel_consts = (
@@ -272,6 +366,7 @@ def render_vpy(params: RifeParams, source_fps: Fraction | None = None, display_f
         tiling_optimization_level=0,
         output_format=1{engine_arg},
     ),"""
+        seed_block = _TRT_TIMING_CACHE_SEED.replace("__ENGINE_DIR__", engine) if engine else ""
 
     return f'''# Fluid Motion — RIFE {label} (generated, do not edit)
 # GPU: {gpu_note} — {mode_note}
@@ -291,7 +386,7 @@ if MPV_ROOT:
         os.environ["PATH"] = _cuda + os.pathsep + os.environ.get("PATH", "")
 
 from vsmlrt import RIFE, Backend
-
+{seed_block}
 # RIFE is temporal. Default VS thread count races get_frame and shreds the picture.
 core.num_threads = 1
 core.max_cache_size = {int(params.cache_size_mb)}
