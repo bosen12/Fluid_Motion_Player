@@ -825,6 +825,53 @@ def player_config_dir(ipc: MpvIpc) -> Path | None:
     return path
 
 
+HOLD_API = "user-data/fluid/hold-api"
+
+
+def hold_for_rebuild(ipc: MpvIpc) -> str:
+    """Pause a playing player across the filter rebuild that is about to start.
+
+    mpv builds the VapourSynth pipeline on its core thread -- loading an
+    engine, or compiling one for a new resolution (38 s measured on the
+    owner's RTX 5070 Ti) -- and stops dead meanwhile. Left playing, audio ran
+    on and underran (2 per 8 s block; 0 when paused first, measured with real
+    audio output) and long builds came back desynchronised. zz-fluid-ipc.lua
+    takes the hold from here and resumes on the first playback-restart, which
+    mpv emits once the new pipeline has produced a frame.
+
+    Only for a player whose script advertises the hold (HOLD_API). One still
+    running an older script would never resume -- mpv loads scripts at launch,
+    so an update reaches a running player only when it is restarted.
+
+    Returns what was done: "resume" (paused here, the script resumes),
+    "keep" (already paused: the script only shields its refresh seek, which
+    used to tear the filter straight back off), or "" (no hold).
+    """
+    try:
+        if ipc.get(HOLD_API) != 1:
+            return ""
+        paused = ipc.get("pause")
+    except IpcError:
+        return ""
+    mode = "keep" if paused is not False else "resume"
+    if mode == "resume":
+        try:
+            ipc.set("pause", True)
+        except IpcError:
+            return ""
+    try:
+        ipc.command("script-message", "fluid-hold", mode)
+    except IpcError:
+        # Nobody will resume it: undo the pause rather than leave it stuck.
+        if mode == "resume":
+            try:
+                ipc.set("pause", False)
+            except IpcError:
+                pass
+        return ""
+    return mode
+
+
 def apply(
     ipc: MpvIpc,
     settings: Settings,
@@ -877,6 +924,9 @@ def apply(
     # so a player left on plain auto/auto-safe would reject it.
     ensure_copyback_hwdec(ipc, pid)
     _strip_other_vapoursynth(ipc)
+    # Before vf is touched at all -- the remove below is a vf change too, and
+    # while paused every vf change makes mpv do a refresh seek.
+    hold_for_rebuild(ipc)
     vf = current_filters(ipc)
     if FILTER_LABEL in vf or vf_is_fluid(vf):
         try:
