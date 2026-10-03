@@ -861,7 +861,14 @@ class Engine:
             with self._lock:
                 applied = self._applied.get(player.pid)
                 retry_at = self._retry_at.get(player.pid, 0.0)
-            if held:
+            if info.get("rebuilding"):
+                # zz-fluid-ipc.lua is holding playback across a filter rebuild.
+                # Its refresh seek reads as seeking=True, and taking that for a
+                # user seek removed the filter mid-rebuild, re-applied, and the
+                # re-apply's own refresh seek did it again: the pause/play loop
+                # v1.6.15 shipped with. Nothing is decided until the hold ends.
+                pass
+            elif held:
                 # The hold-off drops the filter but must not count as a settled
                 # state: forget the snapshot so the settings are re-applied once
                 # the seek quiets down, even if nothing else changes afterwards.

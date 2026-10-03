@@ -2059,3 +2059,36 @@ def test_a_server_that_declares_no_length_is_not_second_guessed(monkeypatch, tmp
     bootstrap._download("https://example/x", dest, None, "scripts", (0.0, 1.0))
 
     assert dest.stat().st_size == 512
+
+
+def test_a_rebuild_hold_is_not_mistaken_for_a_user_seek(monkeypatch, tmp_path):
+    """v1.6.15's pause/play loop, at the tick that caused it.
+
+    A held rebuild makes mpv do a refresh seek, so `seeking` reads True. Taken
+    for a user's seek, tick() removed the filter mid-rebuild and re-applied,
+    and the re-apply's own refresh seek did it again -- about once a second,
+    on a player whose engine was long built. The owner saw AX pause and resume
+    endlessly; no earlier test ran the watcher, only apply().
+    """
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    seen = _applied_profiles(monkeypatch, engine)
+
+    engine.tick()
+    assert seen == ["2x"] and ipc.vf, "filter on"
+    removes_before = sum(1 for c in ipc.commands if c[:2] == ("vf", "remove"))
+
+    # Mid-rebuild: the script is holding and mpv is doing its refresh seek.
+    ipc.props.update({"seeking": True, "user-data/fluid/holding": True})
+    for _ in range(3):
+        engine.tick()
+    assert sum(1 for c in ipc.commands if c[:2] == ("vf", "remove")) == removes_before, \
+        "the filter was torn off during the script's own rebuild"
+    assert seen == ["2x"], "nothing may be re-applied while the hold is open"
+    assert ipc.vf
+
+    # A user's seek, no hold: the hold-off still drops the filter, as ever.
+    ipc.props.update({"seeking": True, "user-data/fluid/holding": False})
+    engine.tick()
+    assert sum(1 for c in ipc.commands if c[:2] == ("vf", "remove")) == removes_before + 1

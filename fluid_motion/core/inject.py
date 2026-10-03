@@ -481,6 +481,9 @@ def snapshot_playback(ipc: MpvIpc, *, budget: float = SNAPSHOT_BUDGET) -> dict[s
     vsync = _get("vsync-ratio")
     paused = bool(_get("pause") or False)
     seeking = bool(_get("seeking") or False)
+    # An older script never sets it: missing reads as "not holding", which is
+    # the behaviour that player had before the hold existed.
+    rebuilding = _get(HOLDING) is True
     time_pos = _get("time-pos")
     speed = _get("speed")
     drops = _get("frame-drop-count")
@@ -522,6 +525,7 @@ def snapshot_playback(ipc: MpvIpc, *, budget: float = SNAPSHOT_BUDGET) -> dict[s
         "vsync_ratio": as_fps(vsync),
         "paused": paused,
         "seeking": seeking,
+        "rebuilding": rebuilding,
         "interpolation": interpolating,
         "time_pos": float(time_pos) if isinstance(time_pos, (int, float)) else None,
         "speed": float(speed) if isinstance(speed, (int, float)) and speed > 0 else 1.0,
@@ -826,6 +830,13 @@ def player_config_dir(ipc: MpvIpc) -> Path | None:
 
 
 HOLD_API = "user-data/fluid/hold-api"
+# True while zz-fluid-ipc.lua holds playback across a rebuild. The watcher
+# reads mpv's `seeking` to hold off during a user's seek, and the refresh seek
+# a held rebuild makes looked exactly like one: v1.6.15 took the filter off,
+# re-applied, and each re-apply's refresh seek did it again -- pause, play,
+# pause about once a second on a player whose engine was long built (reported
+# by the owner; every earlier test drove apply() without the watcher).
+HOLDING = "user-data/fluid/holding"
 
 
 def hold_for_rebuild(ipc: MpvIpc) -> str:
@@ -854,10 +865,19 @@ def hold_for_rebuild(ipc: MpvIpc) -> str:
     except IpcError:
         return ""
     mode = "keep" if paused is not False else "resume"
+    # Set here, synchronously, before anything that seeks -- not left to the
+    # script, whose message handler runs on its own thread a few ms later,
+    # after the watcher could already have read seeking=True. The script
+    # clears it when the hold ends.
+    try:
+        ipc.set(HOLDING, True)
+    except IpcError:
+        return ""
     if mode == "resume":
         try:
             ipc.set("pause", True)
         except IpcError:
+            _clear_holding(ipc)
             return ""
     try:
         ipc.command("script-message", "fluid-hold", mode)
@@ -868,8 +888,16 @@ def hold_for_rebuild(ipc: MpvIpc) -> str:
                 ipc.set("pause", False)
             except IpcError:
                 pass
+        _clear_holding(ipc)
         return ""
     return mode
+
+
+def _clear_holding(ipc: MpvIpc) -> None:
+    try:
+        ipc.set(HOLDING, False)
+    except IpcError:
+        pass
 
 
 def apply(

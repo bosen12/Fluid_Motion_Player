@@ -137,12 +137,23 @@ local HOLD_SAFETY = 15
 local hold = nil
 local hold_timer
 
+-- Published for Fluid Motion's watcher, which reads mpv's `seeking` on its
+-- own: the refresh seek of a held rebuild looked like a user seek to it, so
+-- it took the filter off, re-applied, and every re-apply's refresh seek did
+-- it again -- pause, play, pause, about once a second, on a player whose
+-- engine was long built (v1.6.15, reported by the owner). While this is
+-- true the watcher leaves the player alone.
+local function set_holding(on)
+  mp.set_property_native("user-data/fluid/holding", on)
+end
+
 local function end_hold()
   if not hold then
     return
   end
   local resume = hold.resume
   hold = nil
+  set_holding(false)
   if hold_timer then
     hold_timer:kill()
     hold_timer = nil
@@ -154,6 +165,7 @@ end
 
 local function begin_hold(resume)
   hold = { resume = resume }
+  set_holding(true)
   if hold_timer then
     hold_timer:kill()
   end
@@ -223,6 +235,7 @@ mp.observe_property("pause", "bool", function(_, paused)
   -- Someone resumed mid-hold (the user, a script): theirs now, hands off.
   if hold and paused == false then
     hold = nil
+    set_holding(false)
     if hold_timer then
       hold_timer:kill()
       hold_timer = nil

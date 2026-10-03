@@ -243,9 +243,12 @@ def test_the_budget_does_not_cut_a_player_that_is_answering():
     info = snapshot_playback(ipc)
 
     assert "vf" in handle.writes, "the one property whose failure changes a decision went unasked"
-    # Fourteen, not the fifteen a silent mpv provokes: `filename` is only read
-    # as a fallback when `media-title` comes back empty.
-    assert len(handle.writes) == 14, f"only {len(handle.writes)} of 14 properties were read"
+    # Fifteen, not the sixteen a silent mpv provokes: `filename` is only read
+    # as a fallback when `media-title` comes back empty. (Fourteen until
+    # v1.6.16 added user-data/fluid/holding, which the watcher needs to tell a
+    # rebuild's refresh seek from a user's seek.)
+    assert len(handle.writes) == 15, f"only {len(handle.writes)} of 15 properties were read"
+    assert "user-data/fluid/holding" in handle.writes
     assert info["vf_ok"] is True
     assert info["media"] == "ep01.mkv"
     assert (info["width"], info["height"]) == (1920, 1080)

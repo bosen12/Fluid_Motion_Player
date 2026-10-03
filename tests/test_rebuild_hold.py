@@ -167,3 +167,25 @@ def test_stale_seeking_notification_does_not_drop_a_fresh_filter():
     assert 'if mp.get_property_bool("seeking") then' in observer
     seek_event = lua[lua.index('register_event("seek"'):]
     assert seek_event.splitlines()[1].strip() == "begin_seek_hold()"
+
+
+def test_holding_is_set_before_the_hold_message_and_cleared_on_failure():
+    ipc = Ipc({HOLD_API: 1, "pause": False})
+    hold_for_rebuild(ipc)
+    sets = [c for c in ipc.calls if c[0] == "set"]
+    msg = ipc.calls.index(("command", "script-message", "fluid-hold", "resume"))
+    assert ipc.calls.index(("set", "user-data/fluid/holding", True)) < msg
+    assert sets[0] == ("set", "user-data/fluid/holding", True), "flag first, before the pause can seek"
+
+    failing = Ipc({HOLD_API: 1, "pause": False}, refuse={("command", "script-message")})
+    hold_for_rebuild(failing)
+    assert failing.props["user-data/fluid/holding"] is False
+
+
+def test_script_publishes_and_clears_holding():
+    lua = _lua()
+    assert 'set_property_native("user-data/fluid/holding", on)' in lua
+    end = lua[lua.index("local function end_hold()"):lua.index("local function begin_hold(")]
+    assert "set_holding(false)" in end
+    begin = lua[lua.index("local function begin_hold("):]
+    assert "set_holding(true)" in begin[:300]
