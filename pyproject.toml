@@ -1,6 +1,6 @@
 [project]
 name = "fluid-motion"
-version = "1.6.15"
+version = "1.6.16"
 description = "Realtime RIFE frame interpolation manager for mpv with TensorRT or ncnn/Vulkan"
 readme = "README.md"
 license = { file = "LICENSE" }
