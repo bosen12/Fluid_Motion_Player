@@ -281,7 +281,7 @@ def _engine_with_one_player(monkeypatch, vendors):
     ipc = _FakeIpc()
     told: list[str | None] = []
 
-    def fake_apply(ipc_, settings, mpv_root, *, announce=False, info=None, pid=None, backend=None):
+    def fake_apply(ipc_, settings, mpv_root, *, announce=False, info=None, pid=None, backend=None, **_kw):
         told.append(backend)
         ipc_.command("vf", "add", "@fluid:vapoursynth")
         return Path(mpv_root) / "fluid_rife.vpy"
@@ -350,7 +350,7 @@ def test_the_key_and_the_script_cannot_disagree_about_the_backend(monkeypatch):
     told: dict[str, str | None] = {}
     monkeypatch.setattr(
         watcher_mod, "apply",
-        lambda ipc, s, root, *, announce=False, info=None, pid=None, backend=None: (
+        lambda ipc, s, root, *, announce=False, info=None, pid=None, backend=None, **_kw: (
             told.update(backend=backend) or Path("x.vpy")
         ),
     )

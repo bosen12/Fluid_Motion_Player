@@ -158,6 +158,11 @@ class Engine:
         # is what makes the next tick pick the change back up.
         self._applied: dict[int, tuple] = {}
         self._retry_at: dict[int, float] = {}
+        # pid -> the filter key that was on when a seek hold-off took the
+        # filter off. A re-apply with that same key puts back exactly what
+        # was there: same file, same settings, engine already built -- so it
+        # must not pause playback the way a possible engine compile does.
+        self._seek_dropped: dict[int, Any] = {}
         # Per-pid (time-pos, drop-count, monotonic) of the last usable sample,
         # plus the smoothed ratios built from them. Both speed and drop rate
         # can only be had by differencing two observations, so they have to be
@@ -577,6 +582,7 @@ class Engine:
         wait: float = -1,
         info: dict[str, Any] | None = None,
         root: Path | None = None,
+        pause_for_rebuild: bool = True,
     ) -> bool:
         """Apply the current settings to one mpv and record what was applied.
 
@@ -615,12 +621,14 @@ class Engine:
             apply(
                 ipc, settings, root,
                 announce=announce, info=info, pid=pid, backend=backend,
+                pause_for_rebuild=pause_for_rebuild,
             )
             # Publish before releasing the operation lock, otherwise a newer
             # remove can finish first and this worker resurrects its old key.
             with self._lock:
                 self._applied[pid] = key
                 self._retry_at.pop(pid, None)
+                self._seek_dropped.pop(pid, None)
             self._mark_settling()
             self._error = ""
         except IpcError as exc:
@@ -872,6 +880,9 @@ class Engine:
                 # The hold-off drops the filter but must not count as a settled
                 # state: forget the snapshot so the settings are re-applied once
                 # the seek quiets down, even if nothing else changes afterwards.
+                if applied is not None:
+                    with self._lock:
+                        self._seek_dropped[player.pid] = applied
                 if player.interpolation:
                     if self._remove_from(player.pid, ipc, wait=apply_wait):
                         player.interpolation = False
@@ -892,6 +903,8 @@ class Engine:
                 stale = applied != self._filter_key(want_multi)
                 missing = want_multi > 1 and not player.interpolation
                 if (stale or missing) and time.monotonic() >= retry_at:
+                    with self._lock:
+                        dropped = self._seek_dropped.get(player.pid)
                     # tick() already has a full snapshot for this player; apply()
                     # reads only the rate fields out of it, which are present.
                     if self._apply_to(
@@ -901,6 +914,7 @@ class Engine:
                         wait=apply_wait,
                         info=info,
                         root=root,
+                        pause_for_rebuild=dropped != self._filter_key(want_multi),
                     ):
                         player.interpolation = want_multi > 1
             elif player.interpolation or applied is not None:
@@ -916,6 +930,8 @@ class Engine:
                 self._applied.pop(pid, None)
             for pid in [p for p in self._retry_at if p not in live]:
                 self._retry_at.pop(pid, None)
+            for pid in [p for p in self._seek_dropped if p not in live]:
+                self._seek_dropped.pop(pid, None)
             for pid in [p for p in self._realtime if p not in live]:
                 self._realtime.pop(pid, None)
             for pid in [p for p in self._realtime_seen if p not in live]:

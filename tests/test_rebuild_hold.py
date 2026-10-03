@@ -189,3 +189,31 @@ def test_script_publishes_and_clears_holding():
     assert "set_holding(false)" in end
     begin = lua[lua.index("local function begin_hold("):]
     assert "set_holding(true)" in begin[:300]
+
+
+def test_reapply_after_a_seek_does_not_pause_a_playing_player():
+    # Same file, same settings, engine already built: v1.6.15/16 paused for it
+    # anyway and every seek became a visible pause/resume (owner: "快轉以前
+    # 比較快"; 2.7-4.3 s to interpolation, against ~0.7 s in 1f2f62a).
+    ipc = Ipc({HOLD_API: 1, "pause": False})
+    assert hold_for_rebuild(ipc, pause_playing=False) == ""
+    assert not any(c[0] == "set" for c in ipc.calls)
+
+
+def test_reapply_after_a_seek_still_shields_a_paused_player():
+    # Paused, the re-add makes a refresh seek all the same: without the hold
+    # the watcher tears it off again -- the loop v1.6.16 fixed.
+    ipc = Ipc({HOLD_API: 1, "pause": True})
+    assert hold_for_rebuild(ipc, pause_playing=False) == "keep"
+    assert ("set", "user-data/fluid/holding", True) in ipc.calls
+
+
+def test_apply_passes_the_no_pause_choice_down(tmp_path: Path, monkeypatch):
+    ipc = Ipc({HOLD_API: 1, "pause": False})
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    (tmp_path / "shaders").mkdir(exist_ok=True)
+    apply(ipc, Settings(profile="2x", mpv_root=str(tmp_path)), tmp_path, pid=1, backend="trt",
+          pause_for_rebuild=False)
+    assert ipc.props["pause"] is False
+    assert not any(c[:3] == ("set", "pause", True) for c in ipc.calls)
+    assert any(c[:3] == ("command", "vf", "add") for c in ipc.calls)

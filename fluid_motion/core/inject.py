@@ -839,7 +839,7 @@ HOLD_API = "user-data/fluid/hold-api"
 HOLDING = "user-data/fluid/holding"
 
 
-def hold_for_rebuild(ipc: MpvIpc) -> str:
+def hold_for_rebuild(ipc: MpvIpc, *, pause_playing: bool = True) -> str:
     """Pause a playing player across the filter rebuild that is about to start.
 
     mpv builds the VapourSynth pipeline on its core thread -- loading an
@@ -865,6 +865,14 @@ def hold_for_rebuild(ipc: MpvIpc) -> str:
     except IpcError:
         return ""
     mode = "keep" if paused is not False else "resume"
+    if mode == "resume" and not pause_playing:
+        # A re-apply after a seek: same file, same settings, so the engine is
+        # already built and the rebuild is a sub-second engine load. v1.6.15/16
+        # paused for it anyway, and every seek turned into a visible pause and
+        # resume, 2.7-4.3 s from seek to interpolation against ~0.7 s before
+        # (1f2f62a). Put back on while playing, mpv does no refresh seek, so
+        # there is nothing for a hold to shield either.
+        return ""
     # Set here, synchronously, before anything that seeks -- not left to the
     # script, whose message handler runs on its own thread a few ms later,
     # after the watcher could already have read seeking=True. The script
@@ -909,6 +917,7 @@ def apply(
     info: dict[str, Any] | None = None,
     pid: int | None = None,
     backend: str | None = None,
+    pause_for_rebuild: bool = True,
 ) -> Path:
     # The caller has usually just read these; re-reading them costs another
     # round of IPC for values that cannot have changed in between.
@@ -954,7 +963,7 @@ def apply(
     _strip_other_vapoursynth(ipc)
     # Before vf is touched at all -- the remove below is a vf change too, and
     # while paused every vf change makes mpv do a refresh seek.
-    hold_for_rebuild(ipc)
+    hold_for_rebuild(ipc, pause_playing=pause_for_rebuild)
     vf = current_filters(ipc)
     if FILTER_LABEL in vf or vf_is_fluid(vf):
         try:

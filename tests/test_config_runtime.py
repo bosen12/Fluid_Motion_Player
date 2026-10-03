@@ -2092,3 +2092,71 @@ def test_a_rebuild_hold_is_not_mistaken_for_a_user_seek(monkeypatch, tmp_path):
     ipc.props.update({"seeking": True, "user-data/fluid/holding": False})
     engine.tick()
     assert sum(1 for c in ipc.commands if c[:2] == ("vf", "remove")) == removes_before + 1
+
+
+def test_only_a_reapply_after_a_seek_skips_the_rebuild_pause(monkeypatch, tmp_path):
+    """First apply and changed settings may compile an engine: pause. Putting
+    back exactly what a seek took off may not: the engine is there, and pausing
+    for it made every seek a visible pause/resume."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    calls: list[tuple[str, bool]] = []
+
+    def fake_apply(ipc_, settings_, mpv_root, *, pause_for_rebuild=True, **_kw):
+        calls.append((settings_.profile, pause_for_rebuild))
+        ipc_.command("vf", "add", "@fluid:vapoursynth")
+        return Path(mpv_root) / "shaders" / "fluid_rife.vpy"
+
+    monkeypatch.setattr(watcher_mod, "apply", fake_apply)
+
+    engine.tick()
+    assert calls == [("2x", True)], "first apply: an engine may need building"
+
+    # A seek: the hold-off drops the filter, then the seek settles.
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: True)
+    engine.tick()
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: False)
+    engine.tick()
+    assert calls[-1] == ("2x", False), "same settings back on after a seek: no pause"
+
+    # A seek during which the settings changed: that one may compile.
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: True)
+    engine.tick()
+    engine.settings = Settings(enabled=True, profile="3x", mpv_root=str(tmp_path))
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: False)
+    engine.tick()
+    assert calls[-1] == ("3x", True)
+
+
+def test_the_seek_exemption_is_spent_by_the_reapply_it_was_for(monkeypatch, tmp_path):
+    """Remembered only until the filter is back: a later re-apply that has
+    nothing to do with a seek must pause like any other rebuild."""
+    from fluid_motion.core import watcher as watcher_mod
+
+    ipc = _FakeIpc({"container-fps": 23.976, "estimated-vf-fps": 23.976})
+    settings = Settings(enabled=True, profile="2x", mpv_root=str(tmp_path))
+    engine = _tick_engine(monkeypatch, settings, ipc)
+    calls: list[bool] = []
+
+    def fake_apply(ipc_, settings_, mpv_root, *, pause_for_rebuild=True, **_kw):
+        calls.append(pause_for_rebuild)
+        ipc_.command("vf", "add", "@fluid:vapoursynth")
+        return Path(mpv_root) / "shaders" / "fluid_rife.vpy"
+
+    monkeypatch.setattr(watcher_mod, "apply", fake_apply)
+    engine.tick()
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: True)
+    engine.tick()
+    monkeypatch.setattr(engine, "_held_off", lambda pid=0, seeking=False: False)
+    engine.tick()
+    assert calls == [True, False]
+
+    # The filter falls off for some other reason; nothing was seeked.
+    ipc.vf = []
+    for pid in list(engine._applied):
+        engine._invalidate(pid)
+    engine.tick()
+    assert calls[-1] is True
