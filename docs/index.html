@@ -166,7 +166,7 @@
       <li><span class="steps__n">2</span><div><h3>開啟 Fluid Motion</h3><p>介面上應該會顯示已接上該播放器。</p></div></li>
       <li><span class="steps__n">3</span><div><h3>點安裝執行環境</h3><p>NVIDIA 約 3.5 GB：vs-mlrt TensorRT、RIFE 模型，必要時加上 VapourSynth。AMD 小很多——ncnn 外掛只有單一個 2.7 MB 的檔案，因為 Vulkan 本身由顯示卡驅動提供。只需要做一次。</p></div></li>
       <li><span class="steps__n">4</span><div><h3>完全退出並重開播放器</h3><p>mpv 只在啟動時載入腳本，所以這一步不能省。</p></div></li>
-      <li><span class="steps__n">5</span><div><h3>播影片，打開即時補幀</h3><p>或直接按 <code>F3</code>。在 NVIDIA 上，第一個解析度會編譯 TensorRT engine（數十秒到數分鐘），之後同解析度走快取，新的解析度也會沿用已編過的 timing cache，等待大約減半；ncnn 不編譯 engine，所以沒有這一段等待，快取面板對它也不適用。</p></div></li>
+      <li><span class="steps__n">5</span><div><h3>播影片，打開即時補幀</h3><p>或直接按 <code>F3</code>。在 NVIDIA 上，第一個解析度會編譯 TensorRT engine（數十秒到數分鐘），之後同解析度走快取，新的解析度也會沿用已編過的 timing cache，等待縮短約兩成到一半；ncnn 不編譯 engine，所以沒有這一段等待，快取面板對它也不適用。</p></div></li>
     </ol>
   </section>
 

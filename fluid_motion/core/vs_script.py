@@ -232,69 +232,94 @@ def resolve_backend(setting: str, vendors: set[str] | frozenset[str]) -> str:
 # TensorRT version -- is removed and the build retried once without it.
 # mpv re-runs this script on every seek; with the engine already built, the
 # wrapper only adds two stat calls.
+#
+# ★ The script runs many times in ONE interpreter. mpv re-evaluates it on
+# every seek and filter re-init, vsmlrt stays imported in sys.modules, and the
+# previous run's globals are torn down. 1.6.13 installed its wrapper on the
+# vsmlrt module and left it there; the next run wrapped the wrapper, and the
+# old one looked its names up in a namespace that no longer existed --
+# NameError, "could not init VS", interpolation off. Every test then ran the
+# script once per process, the one shape that cannot show it. So now:
+#   - the module is patched only for the duration of the RIFE() call and
+#     restored in a finally, so nothing outlives the run;
+#   - the wrapper reads nothing from the script's globals -- everything it
+#     needs is bound into closures when it is built;
+#   - a player that already ran 1.6.13 still carries the dead wrapper on its
+#     vsmlrt module, so the genuine get_engine_path is reloaded from vsmlrt.py
+#     whenever the module's one was not defined in that file.
 _TRT_TIMING_CACHE_SEED = r'''
-import copy as _fm_copy
-import shutil as _fm_shutil
-import vsmlrt as _fm_vsmlrt
+def _fm_seeded_rife(rife, engine_dir):
+    import copy
+    import importlib.util
+    import os
+    import shutil
+    import vsmlrt
 
-_FM_ENGINE_DIR = r"__ENGINE_DIR__"
-_FM_ENGINE_DIR = os.path.normcase(os.path.abspath(_FM_ENGINE_DIR)) if _FM_ENGINE_DIR else ""
-_fm_seeded = []
-_fm_get_engine_path = _fm_vsmlrt.get_engine_path
+    engine_dir = os.path.normcase(os.path.abspath(engine_dir))
 
+    def genuine_get_engine_path():
+        fn = vsmlrt.get_engine_path
+        code = getattr(fn, "__code__", None)
+        if code is not None and os.path.normcase(code.co_filename) == os.path.normcase(vsmlrt.__file__):
+            return fn
+        spec = importlib.util.spec_from_file_location("_fm_vsmlrt_pristine", vsmlrt.__file__)
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        vsmlrt.get_engine_path = fresh.get_engine_path
+        return fresh.get_engine_path
 
-def _fm_seeding_get_engine_path(*args, **kwargs):
-    path = _fm_get_engine_path(*args, **kwargs)
-    try:
-        folder = os.path.dirname(path)
-        cache = path + ".cache"
-        built = os.path.isfile(path) and os.path.getsize(path) >= 1024
-        if (not built and not os.path.exists(cache)
-                and os.path.normcase(os.path.abspath(folder)) == _FM_ENGINE_DIR):
-            seeds = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".engine.cache")]
-            seeds = [s for s in seeds if os.path.getsize(s) > 0]
-            if seeds:
-                _fm_shutil.copyfile(max(seeds, key=os.path.getmtime), cache)
-                _fm_seeded.append(cache)
-    except OSError:
-        pass
-    return path
-
-
-def _fm_unseed():
-    _fm_vsmlrt.get_engine_path = _fm_get_engine_path
-    undone = False
-    for cache in _fm_seeded:
-        try:
-            os.remove(cache)
-            undone = True
-        except OSError:
-            pass
-    del _fm_seeded[:]
-    return undone
-
-
-def _fm_retry_unseeded(rife):
     def call(*args, **kwargs):
+        genuine = genuine_get_engine_path()
+        seeded = []
+
+        def seeding(*a, **k):
+            path = genuine(*a, **k)
+            try:
+                folder = os.path.dirname(path)
+                cache = path + ".cache"
+                built = os.path.isfile(path) and os.path.getsize(path) >= 1024
+                if (not built and not os.path.exists(cache)
+                        and os.path.normcase(os.path.abspath(folder)) == engine_dir):
+                    seeds = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".engine.cache")]
+                    seeds = [s for s in seeds if os.path.getsize(s) > 0]
+                    if seeds:
+                        shutil.copyfile(max(seeds, key=os.path.getmtime), cache)
+                        seeded.append(cache)
+            except OSError:
+                pass
+            return path
+
+        def attempt(get_engine_path):
+            vsmlrt.get_engine_path = get_engine_path
+            try:
+                return rife(*args, **kwargs)
+            finally:
+                vsmlrt.get_engine_path = genuine
+
         # RIFE() mutates the backend it is given (force_fp16, custom_args), so
         # the retry gets an untouched copy. Only the backend: the clip is a
-        # VideoNode, which cannot be copied at all -- deep-copying every
-        # argument raised before RIFE ever ran, on every single call.
-        pristine = _fm_copy.deepcopy(kwargs.get("backend"))
+        # VideoNode, which cannot be copied at all.
+        pristine = copy.deepcopy(kwargs.get("backend"))
         try:
-            return rife(*args, **kwargs)
+            return attempt(seeding)
         except Exception:
-            if not _fm_unseed():
+            undone = False
+            for cache in seeded:
+                try:
+                    os.remove(cache)
+                    undone = True
+                except OSError:
+                    pass
+            if not undone:
                 raise
             if pristine is not None:
                 kwargs["backend"] = pristine
-            return rife(*args, **kwargs)
+            return attempt(genuine)
+
     return call
 
 
-if _FM_ENGINE_DIR:
-    _fm_vsmlrt.get_engine_path = _fm_seeding_get_engine_path
-    RIFE = _fm_retry_unseeded(RIFE)
+RIFE = _fm_seeded_rife(RIFE, r"__ENGINE_DIR__")
 '''
 
 
